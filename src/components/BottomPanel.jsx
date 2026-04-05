@@ -6,8 +6,9 @@
 // ─────────────────────────────────────────────────────────────
 import { useEffect, useState } from 'react'
 import { Calendar, Newspaper, History, AlertTriangle, Clock,
-         TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react'
+         TrendingUp, TrendingDown, Minus, RefreshCw, BookOpen, Activity } from 'lucide-react'
 import useStore from '../store/useStore'
+import TradePanel from './TradePanel'
 
 // ── Tab 1: Calendario Económico ──────────────────────────────
 // Muestra los eventos del calendario Forex Factory para hoy.
@@ -258,6 +259,7 @@ export default function BottomPanel() {
 
   const TABS = [
     { id: 'calendar', label: 'Calendario', Icon: Calendar },
+    { id: 'depth',    label: 'Market Depth', Icon: BookOpen },
     { id: 'news',     label: 'Noticias',   Icon: Newspaper },
     { id: 'history',  label: 'Historial',  Icon: History },
   ]
@@ -270,12 +272,12 @@ export default function BottomPanel() {
           <button
             key={tab.id}
             onClick={() => setBottomTab(tab.id)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors border-b-2
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium transition-colors border-b-2
                         ${bottomTab === tab.id
                           ? 'border-accent text-accent'
                           : 'border-transparent text-muted hover:text-text-primary'}`}
           >
-            <tab.Icon size={12} />
+            <tab.Icon size={11} />
             <span>{tab.label}</span>
           </button>
         ))}
@@ -284,6 +286,7 @@ export default function BottomPanel() {
       {/* ── Contenido del tab activo ───────────────────────── */}
       <div className="flex-1 overflow-hidden flex flex-col">
         {bottomTab === 'calendar' && <CalendarTab />}
+        {bottomTab === 'depth'    && <TradePanel />}
         {bottomTab === 'news'     && <NewsTab />}
         {bottomTab === 'history'  && <HistoryTab />}
       </div>

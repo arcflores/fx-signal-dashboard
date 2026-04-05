@@ -43,3 +43,24 @@ button:focus { outline: none; }
   font-size: 11px;
   font-weight: 600;
 }
+
+/* ── Ocultar logo/watermark de TradingView Lightweight Charts ─ */
+.tv-lightweight-charts a[href*="tradingview"],
+.tv-lightweight-charts a[target="_blank"] {
+  display: none !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* Input numérico sin flechas nativas (usamos nuestros propios +/-) */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}

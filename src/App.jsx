@@ -1,42 +1,42 @@
 // ─────────────────────────────────────────────────────────────
-// App.jsx — Layout principal estilo TradingView / TradeStation
+// App.jsx — Layout principal estilo TradeStation
 //
 // LAYOUT:
 //  ┌────────────────────────────────────────────────────────────┐
 //  │                   HEADER (topbar, h-12)                    │
 //  ├──┬──║──────┬──────────────────────────║──────────────────┤
 //  │  │  ║      │                          ║                  │
-//  │LT│  ║Watch │      ChartPanel          ║  Signals +       │
-//  │  │ ≡║list  │  (velas+RSI+MACD)        ║  Claude AI +     │
-//  │  │  ║      │  OHLCV legend + Volume   ║  Trade Entry     │
-//  │  │  ║      ├──────────────────────────║                  │
-//  │  │  ║      │   BottomPanel (h-36)     ║                  │
+//  │LT│  ║Watch │      ChartPanel          ║  Prediction      │
+//  │  │ ≡║list  │  (velas+RSI+MACD)        ║  Scanner +       │
+//  │  │  ║      │  + Drawing tools         ║  Virtual Orders  │
+//  │  │  ║      ├──────────────────────────║  + Signals       │
+//  │  │  ║      │   BottomPanel            ║                  │
 //  └──┴──║──────┴──────────────────────────║──────────────────┘
 //
 // ≡ = Drag handles para redimensionar columnas
 //
 // Funcionalidades:
-//   ✦ Resize handles entre columnas (arrastrar para ajustar ancho)
-//   ✦ Trade Entry Panel (CALL/PUT + expiración + monto)
-//   ✦ Hooks de datos: Binance WebSocket, Forex Mock, Signals
+//   ✦ Scanner automático de predicciones (todas las parejas)
+//   ✦ Órdenes virtuales con Entry/SL/TP para evaluar
+//   ✦ Auto-rotación: cuando una orden cierra, escanea siguiente
+//   ✦ Herramientas de dibujo funcionales (H-Line, Trendline, Fib)
+//   ✦ Indicadores configurables (periodos editables)
+//   ✦ Market Depth (Level 2 + Time & Sales) en bottom panel
 // ─────────────────────────────────────────────────────────────
 import { useState, useCallback, useRef } from 'react'
-import Header      from './components/Header'
-import LeftToolbar from './components/LeftToolbar'
-import Watchlist   from './components/Watchlist'
-import ChartPanel  from './components/ChartPanel'
-import SignalPanel from './components/SignalPanel'
-import ClaudePanel from './components/ClaudePanel'
-import TradePanel  from './components/TradePanel'
-import BottomPanel from './components/BottomPanel'
+import Header          from './components/Header'
+import LeftToolbar     from './components/LeftToolbar'
+import Watchlist       from './components/Watchlist'
+import ChartPanel      from './components/ChartPanel'
+import PredictionPanel from './components/PredictionPanel'
+import BottomPanel     from './components/BottomPanel'
 
-import useBinanceWS from './hooks/useBinanceWS'
-import useSignals   from './hooks/useSignals'
-import useForexMock from './hooks/useForexMock'
+import useBinanceWS          from './hooks/useBinanceWS'
+import useSignals             from './hooks/useSignals'
+import useForexMock           from './hooks/useForexMock'
+import usePredictionScanner   from './hooks/usePredictionScanner'
 
 // ── ResizeHandle: handle de arrastre entre columnas ──────────
-// Permite al usuario redimensionar las columnas arrastrando.
-// 'onDelta' recibe el delta en px del arrastre (positivo = derecha).
 function ResizeHandle({ onDelta, vertical = false }) {
   const dragRef = useRef(null)
 
@@ -72,7 +72,6 @@ function ResizeHandle({ onDelta, vertical = false }) {
         }`}
       title="Arrastrar para redimensionar"
     >
-      {/* Indicador visual del handle */}
       <div className={`absolute inset-0 flex items-center justify-center opacity-0
                        group-hover:opacity-100 transition-opacity pointer-events-none`}>
         {vertical
@@ -90,25 +89,23 @@ export default function App() {
   const { isConnected } = useBinanceWS()
   useForexMock()
   useSignals()
+  usePredictionScanner()
 
   // ── Estado de anchos de columna (redimensionables) ────────
-  const [watchlistWidth, setWatchlistWidth]   = useState(130)   // px
-  const [rightPanelWidth, setRightPanelWidth] = useState(240)   // px
+  const [watchlistWidth, setWatchlistWidth]   = useState(130)
+  const [rightPanelWidth, setRightPanelWidth] = useState(280)
+  const [bottomHeight, setBottomHeight]       = useState(140)
 
-  // ── Estado de alturas del panel derecho ───────────────────
-  const [signalHeight, setSignalHeight]       = useState(45)    // % de la col derecha
-
-  // Callbacks de resize — actualizan los anchos con límites mínimos/máximos
   const resizeWatchlist = useCallback((delta) => {
     setWatchlistWidth(w => Math.max(80, Math.min(220, w + delta)))
   }, [])
 
   const resizeRightPanel = useCallback((delta) => {
-    setRightPanelWidth(w => Math.max(180, Math.min(380, w - delta)))
+    setRightPanelWidth(w => Math.max(200, Math.min(400, w - delta)))
   }, [])
 
-  const resizeSignalPanel = useCallback((delta) => {
-    setSignalHeight(h => Math.max(25, Math.min(70, h + delta / 8)))
+  const resizeBottom = useCallback((delta) => {
+    setBottomHeight(h => Math.max(60, Math.min(300, h - delta)))
   }, [])
 
   return (
@@ -123,42 +120,41 @@ export default function App() {
       {/* ── Header ──────────────────────────────────────────── */}
       <Header isConnected={isConnected} />
 
-      {/* ── Área principal con 4 columnas ─────────────────── */}
+      {/* ── Área principal ───────────────────────────────── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
 
-        {/* ── Col 1: Left Toolbar (herramientas de dibujo) ── */}
+        {/* ── Col 1: Left Toolbar ───────────────────────── */}
         <LeftToolbar />
 
-        {/* ── Col 2: Watchlist (redimensionable) ─────────── */}
+        {/* ── Col 2: Watchlist ───────────────────────────── */}
         <div style={{ width: watchlistWidth, flexShrink: 0, overflow: 'hidden' }}>
           <Watchlist />
         </div>
 
-        {/* ── Handle resize watchlist / chart ─────────────── */}
         <ResizeHandle onDelta={resizeWatchlist} />
 
-        {/* ── Col 3: Chart + Bottom panel ─────────────────── */}
-        {/* flex: 1 → toma todo el espacio sobrante */}
+        {/* ── Col 3: Chart + Bottom ─────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden', minWidth: 0 }}>
 
-          {/* CHART: ocupa todo el espacio disponible menos el BottomPanel */}
+          {/* Chart */}
           <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
-            {/* El wrapper explícito con display:flex asegura que ChartPanel recibe altura */}
             <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
               <ChartPanel />
             </div>
           </div>
 
-          {/* Bottom panel: Calendario / Noticias / Historial */}
-          <div style={{ height: '140px', flexShrink: 0, borderTop: '1px solid #1E2732' }}>
+          {/* Resize handle bottom */}
+          <ResizeHandle onDelta={resizeBottom} vertical />
+
+          {/* Bottom panel */}
+          <div style={{ height: bottomHeight, flexShrink: 0 }}>
             <BottomPanel />
           </div>
         </div>
 
-        {/* ── Handle resize chart / right panel ───────────── */}
         <ResizeHandle onDelta={resizeRightPanel} />
 
-        {/* ── Col 4: Panel derecho (Señales + Claude + Trade) ─ */}
+        {/* ── Col 4: Prediction Scanner ─────────────────── */}
         <div
           style={{
             width: rightPanelWidth,
@@ -170,23 +166,7 @@ export default function App() {
             background: '#0B0E11',
           }}
         >
-          {/* Señales técnicas */}
-          <div style={{ flex: `0 0 ${signalHeight}%`, overflow: 'hidden', borderBottom: '1px solid #1E2732' }}>
-            <SignalPanel />
-          </div>
-
-          {/* Handle resize signals / claude */}
-          <ResizeHandle onDelta={resizeSignalPanel} vertical />
-
-          {/* Claude AI */}
-          <div style={{ flex: '1 1 0%', overflow: 'hidden', minHeight: 0, borderBottom: '1px solid #1E2732' }}>
-            <ClaudePanel />
-          </div>
-
-          {/* Trade Entry Panel (CALL/PUT) */}
-          <div style={{ flexShrink: 0 }}>
-            <TradePanel />
-          </div>
+          <PredictionPanel />
         </div>
 
       </div>

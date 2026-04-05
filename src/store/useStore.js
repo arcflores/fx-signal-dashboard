@@ -57,6 +57,11 @@ const useStore = create((set, get) => ({
   // ── Estado: Panel inferior activo ─────────────────────────
   bottomTab: 'calendar', // 'calendar' | 'news' | 'history'
 
+  // ── Estado: Predicciones del scanner ───────────────────────
+  // Array de { id, pair, tf, direction, entry, sl, tp, confidence,
+  //            reasons, status, createdAt, triggeredAt, closedAt }
+  predictions: [],
+
   // ── Estado: Historial de señales de la sesión ─────────────
   signalHistory: [],
 
@@ -161,6 +166,9 @@ const useStore = create((set, get) => ({
   setIndicatorPeriods: (periods) => set(state => ({
     indicatorPeriods: { ...state.indicatorPeriods, ...periods }
   })),
+
+  // Actualiza las predicciones del scanner
+  setPredictions: (predictions) => set({ predictions }),
 
   // Establece el estado de análisis (mientras Claude procesa)
   setAnalyzing: (isAnalyzing) => set({ isAnalyzing }),

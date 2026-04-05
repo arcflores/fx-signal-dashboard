@@ -411,50 +411,51 @@ export default function ChartPanel() {
   } = useTVChart(containerRef, rsiRef, macdRef, handleOHLCV)
 
   // ── Efecto: Herramientas de dibujo ──────────────────────────
+  // IMPORTANTE: Usamos chart.subscribeClick() (API nativa de LW Charts)
+  // en lugar de DOM events, porque el canvas del chart consume los clicks
+  // antes de que lleguen al contenedor div.
   useEffect(() => {
-    const container = containerRef.current
-    if (!container) return
+    const chart  = chartRef.current
+    const series = candleSeriesRef.current
+    if (!chart || !series) return
 
     // Reset state when tool changes
     drawStateRef.current = { phase: 'idle', p1: null }
 
-    if (drawingTool === 'cursor' || drawingTool === 'crosshair') {
+    if (drawingTool === 'cursor' || drawingTool === 'crosshair' || drawingTool === 'trash') {
       setDrawHint(null)
-      container.style.cursor = 'default'
       return
     }
 
-    container.style.cursor = 'crosshair'
+    // Handler nativo de click del chart
+    const onChartClick = (param) => {
+      if (!param.point || !series) return
 
-    const onClick = (e) => {
-      if (!chartRef.current || !candleSeriesRef.current) return
-      const rect  = container.getBoundingClientRect()
-      const xPx   = e.clientX - rect.left
-      const yPx   = e.clientY - rect.top
-      const price = candleSeriesRef.current.coordinateToPrice(yPx)
-      const time  = chartRef.current.timeScale().coordinateToTime(xPx)
-      if (price == null || !time) return
+      const price = series.coordinateToPrice(param.point.y)
+      const time  = param.time  // Puede ser null si click fuera del rango
+      if (price == null) return
 
       // ── Línea horizontal ─────────────────────────────────
       if (drawingTool === 'hline' || drawingTool === 'hline_ray') {
-        const pl = candleSeriesRef.current.createPriceLine({
+        const pl = series.createPriceLine({
           price,
           color:            '#3B82F6',
           lineWidth:        1,
           lineStyle:        LineStyle.Dashed,
           axisLabelVisible: true,
-          title:            '',
+          title:            price.toFixed(PAIR_CONFIG[activePair]?.decimals ?? 4),
         })
-        userDrawingsRef.current.push({ type: 'priceLine', ref: pl, series: candleSeriesRef.current })
-        setDrawHint(null)
+        userDrawingsRef.current.push({ type: 'priceLine', ref: pl, series })
         return
       }
 
       // ── Trendline (2 clicks) ─────────────────────────────
       if (drawingTool === 'trendline' || drawingTool === 'ray') {
+        if (!time) return  // necesitamos time válido
+
         if (drawStateRef.current.phase === 'idle') {
           drawStateRef.current = { phase: 'first', p1: { price, time } }
-          setDrawHint('2° click para completar la línea de tendencia')
+          setDrawHint('2° click para completar la línea')
           return
         }
         if (drawStateRef.current.phase === 'first') {
@@ -462,17 +463,15 @@ export default function ChartPanel() {
           drawStateRef.current = { phase: 'idle', p1: null }
           setDrawHint(null)
 
-          // Ordenamos por tiempo para que LW Charts no rechace datos desordenados
-          const [ta, pa] = p1.time <= time
-            ? [p1.time, p1.price]
-            : [time, price]
-          const [tb, pb] = p1.time <= time
-            ? [time, price]
-            : [p1.time, p1.price]
+          // Ordenamos por tiempo (LW Charts requiere datos ascendentes)
+          const points = [
+            { time: p1.time, value: p1.price },
+            { time,          value: price },
+          ].sort((a, b) => a.time - b.time)
 
-          if (ta === tb) return // misma vela, no dibujamos
+          if (points[0].time === points[1].time) return
 
-          const ls = chartRef.current.addLineSeries({
+          const ls = chart.addLineSeries({
             color:                   '#F59E0B',
             lineWidth:               1.5,
             lineStyle:               LineStyle.Solid,
@@ -480,35 +479,66 @@ export default function ChartPanel() {
             lastValueVisible:        false,
             crosshairMarkerVisible:  false,
           })
-          ls.setData([{ time: ta, value: pa }, { time: tb, value: pb }])
-          userDrawingsRef.current.push({ type: 'lineSeries', ref: ls, chart: chartRef.current })
+          ls.setData(points)
+          userDrawingsRef.current.push({ type: 'lineSeries', ref: ls, chart })
           return
         }
       }
 
-      // ── Línea vertical (simulada con marker) ─────────────
-      if (drawingTool === 'vline') {
-        if (!candleSeriesRef.current) return
-        candleSeriesRef.current.setMarkers([
-          ...( candleSeriesRef.current.markers?.() ?? [] ),
-          { time, position: 'aboveBar', color: '#3B82F6', shape: 'arrowDown', text: '|', size: 1 }
-        ])
-        return
+      // ── Fibonacci retrace (2 clicks: high → low) ─────────
+      if (drawingTool === 'fibonacci') {
+        if (!time) return
+
+        if (drawStateRef.current.phase === 'idle') {
+          drawStateRef.current = { phase: 'first', p1: { price, time } }
+          setDrawHint('2° click en el extremo opuesto para Fibonacci')
+          return
+        }
+        if (drawStateRef.current.phase === 'first') {
+          const { p1 } = drawStateRef.current
+          drawStateRef.current = { phase: 'idle', p1: null }
+          setDrawHint(null)
+
+          const high = Math.max(p1.price, price)
+          const low  = Math.min(p1.price, price)
+          const diff = high - low
+          if (diff <= 0) return
+
+          const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+          const colors = ['#9CA3AF','#FBBf24','#F97316','#94A3B8','#3B82F6','#A78BFA','#9CA3AF']
+
+          levels.forEach((lvl, i) => {
+            const p = high - diff * lvl
+            const pl = series.createPriceLine({
+              price:            p,
+              color:            colors[i],
+              lineWidth:        lvl === 0.618 ? 2 : 1,
+              lineStyle:        lvl === 0.618 ? LineStyle.Solid : LineStyle.Dashed,
+              axisLabelVisible: true,
+              title:            `${(lvl * 100).toFixed(1)}%`,
+            })
+            userDrawingsRef.current.push({ type: 'priceLine', ref: pl, series })
+          })
+          return
+        }
       }
     }
 
-    container.addEventListener('click', onClick)
+    chart.subscribeClick(onChartClick)
+
+    // Show tool hint
     if (drawingTool === 'trendline' || drawingTool === 'ray') {
-      setDrawHint('1° click para empezar la línea de tendencia')
-    } else if (drawingTool === 'hline') {
-      setDrawHint('Click en el precio para trazar línea horizontal')
+      setDrawHint('Click para empezar línea de tendencia')
+    } else if (drawingTool === 'hline' || drawingTool === 'hline_ray') {
+      setDrawHint('Click en el precio deseado')
+    } else if (drawingTool === 'fibonacci') {
+      setDrawHint('Click en el punto alto para Fibonacci')
     }
 
     return () => {
-      container.removeEventListener('click', onClick)
-      container.style.cursor = ''
+      try { chart.unsubscribeClick(onChartClick) } catch {}
     }
-  }, [drawingTool])
+  }, [drawingTool, activePair])
 
   // ── Efecto: Limpiar todos los dibujos ─────────────────────
   useEffect(() => {

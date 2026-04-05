@@ -80,6 +80,15 @@ const useStore = create((set, get) => ({
   // ── Estado: Visibilidad de indicadores overlay ────────────
   showIndicators: { ema20: true, ema50: true, bb: true, fibonacci: true, volume: true },
 
+  // ── Estado: Periodos de indicadores (configurables por el usuario) ──
+  indicatorPeriods: {
+    ema1: 20,   // EMA rápida (azul)
+    ema2: 50,   // EMA lenta (naranja)
+    bb:   20,   // Bollinger Bands periodo
+    rsi:  14,   // RSI periodo
+    macd: [12, 26, 9], // MACD [fast, slow, signal]
+  },
+
   // ── Acciones ──────────────────────────────────────────────
 
   // Cambia el par activo (ej. EUR/USD → GBP/USD)
@@ -146,6 +155,11 @@ const useStore = create((set, get) => ({
   // Activa/desactiva un indicador overlay
   toggleIndicator: (key) => set(state => ({
     showIndicators: { ...state.showIndicators, [key]: !state.showIndicators[key] }
+  })),
+
+  // Actualiza periodos de indicadores (merge parcial)
+  setIndicatorPeriods: (periods) => set(state => ({
+    indicatorPeriods: { ...state.indicatorPeriods, ...periods }
   })),
 
   // Establece el estado de análisis (mientras Claude procesa)

@@ -384,8 +384,20 @@ export default function ChartPanel() {
   // ── Datos del store global ─────────────────────────────────
   const {
     activePair, activeTF, indicators,
-    lastTick, chartType, showIndicators,
+    lastTick, chartType, showIndicators, drawingTool,
+    indicatorPeriods,
   } = useStore()
+
+  // ── Tracking para cambio de tipo de chart ─────────────────
+  const prevChartTypeRef = useRef('candlestick')
+
+  // ── Estado de dibujos del usuario ─────────────────────────
+  // Cada entrada: { type: 'priceLine'|'lineSeries', ref, series? }
+  const userDrawingsRef = useRef([])
+  // Estado de trazado en progreso (trendline 2 clicks)
+  const drawStateRef    = useRef({ phase: 'idle', p1: null }) // phase: 'idle'|'first'
+  // Crosshair hint: "Click para empezar / segundo click para terminar"
+  const [drawHint, setDrawHint] = useState(null)
 
   // ── Creamos los tres charts (hook) ─────────────────────────
   const {
@@ -397,6 +409,123 @@ export default function ChartPanel() {
     macdLineRef, macdSignalRef, macdHistRef,
     rsiChartRef, macdChartRef,
   } = useTVChart(containerRef, rsiRef, macdRef, handleOHLCV)
+
+  // ── Efecto: Herramientas de dibujo ──────────────────────────
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    // Reset state when tool changes
+    drawStateRef.current = { phase: 'idle', p1: null }
+
+    if (drawingTool === 'cursor' || drawingTool === 'crosshair') {
+      setDrawHint(null)
+      container.style.cursor = 'default'
+      return
+    }
+
+    container.style.cursor = 'crosshair'
+
+    const onClick = (e) => {
+      if (!chartRef.current || !candleSeriesRef.current) return
+      const rect  = container.getBoundingClientRect()
+      const xPx   = e.clientX - rect.left
+      const yPx   = e.clientY - rect.top
+      const price = candleSeriesRef.current.coordinateToPrice(yPx)
+      const time  = chartRef.current.timeScale().coordinateToTime(xPx)
+      if (price == null || !time) return
+
+      // ── Línea horizontal ─────────────────────────────────
+      if (drawingTool === 'hline' || drawingTool === 'hline_ray') {
+        const pl = candleSeriesRef.current.createPriceLine({
+          price,
+          color:            '#3B82F6',
+          lineWidth:        1,
+          lineStyle:        LineStyle.Dashed,
+          axisLabelVisible: true,
+          title:            '',
+        })
+        userDrawingsRef.current.push({ type: 'priceLine', ref: pl, series: candleSeriesRef.current })
+        setDrawHint(null)
+        return
+      }
+
+      // ── Trendline (2 clicks) ─────────────────────────────
+      if (drawingTool === 'trendline' || drawingTool === 'ray') {
+        if (drawStateRef.current.phase === 'idle') {
+          drawStateRef.current = { phase: 'first', p1: { price, time } }
+          setDrawHint('2° click para completar la línea de tendencia')
+          return
+        }
+        if (drawStateRef.current.phase === 'first') {
+          const { p1 } = drawStateRef.current
+          drawStateRef.current = { phase: 'idle', p1: null }
+          setDrawHint(null)
+
+          // Ordenamos por tiempo para que LW Charts no rechace datos desordenados
+          const [ta, pa] = p1.time <= time
+            ? [p1.time, p1.price]
+            : [time, price]
+          const [tb, pb] = p1.time <= time
+            ? [time, price]
+            : [p1.time, p1.price]
+
+          if (ta === tb) return // misma vela, no dibujamos
+
+          const ls = chartRef.current.addLineSeries({
+            color:                   '#F59E0B',
+            lineWidth:               1.5,
+            lineStyle:               LineStyle.Solid,
+            priceLineVisible:        false,
+            lastValueVisible:        false,
+            crosshairMarkerVisible:  false,
+          })
+          ls.setData([{ time: ta, value: pa }, { time: tb, value: pb }])
+          userDrawingsRef.current.push({ type: 'lineSeries', ref: ls, chart: chartRef.current })
+          return
+        }
+      }
+
+      // ── Línea vertical (simulada con marker) ─────────────
+      if (drawingTool === 'vline') {
+        if (!candleSeriesRef.current) return
+        candleSeriesRef.current.setMarkers([
+          ...( candleSeriesRef.current.markers?.() ?? [] ),
+          { time, position: 'aboveBar', color: '#3B82F6', shape: 'arrowDown', text: '|', size: 1 }
+        ])
+        return
+      }
+    }
+
+    container.addEventListener('click', onClick)
+    if (drawingTool === 'trendline' || drawingTool === 'ray') {
+      setDrawHint('1° click para empezar la línea de tendencia')
+    } else if (drawingTool === 'hline') {
+      setDrawHint('Click en el precio para trazar línea horizontal')
+    }
+
+    return () => {
+      container.removeEventListener('click', onClick)
+      container.style.cursor = ''
+    }
+  }, [drawingTool])
+
+  // ── Efecto: Limpiar todos los dibujos ─────────────────────
+  useEffect(() => {
+    const clearAll = () => {
+      userDrawingsRef.current.forEach(d => {
+        try {
+          if (d.type === 'priceLine') d.series.removePriceLine(d.ref)
+          if (d.type === 'lineSeries') d.chart.removeSeries(d.ref)
+        } catch {}
+      })
+      userDrawingsRef.current = []
+      drawStateRef.current = { phase: 'idle', p1: null }
+      setDrawHint(null)
+    }
+    window.addEventListener('chart:clearDrawings', clearAll)
+    return () => window.removeEventListener('chart:clearDrawings', clearAll)
+  }, [])
 
   // ── Efecto 1: TICK EN TIEMPO REAL (500ms) ─────────────────
   // Solo actualiza la vela actual con series.update() → animación fluida
@@ -423,20 +552,62 @@ export default function ChartPanel() {
     }
   }, [lastTick, activePair, activeTF])
 
-  // ── Efecto 2: CARGA INICIAL / CAMBIO PAR-TF ───────────────
+  // ── Efecto 2: CARGA INICIAL / CAMBIO PAR-TF / CHART TYPE ──
   // setData() completo: velas + todos los indicadores
   // Se ejecuta al cambiar par, TF, indicadores o tipo de chart
   useEffect(() => {
+    if (!chartRef.current) return
     const key     = `${activePair}_${activeTF}`
     const candles = useStore.getState().candleData[key]
     if (!candles || candles.length < 5) return
 
-    const closes = candles.map(c => c.close)
+    const closes  = candles.map(c => c.close)
     const config  = PAIR_CONFIG[activePair]
 
-    // ── Velas / Bars / Line / Area ──────────────────────
+    // ── Cambio de tipo de chart: recrear serie principal ──
+    if (chartType !== prevChartTypeRef.current) {
+      if (candleSeriesRef.current) {
+        try { chartRef.current.removeSeries(candleSeriesRef.current) } catch {}
+      }
+      switch (chartType) {
+        case 'bar':
+          candleSeriesRef.current = chartRef.current.addBarSeries({
+            upColor:   COLORS.bullish, downColor: COLORS.bearish,
+            openVisible: true, thinBars: false,
+          })
+          break
+        case 'line':
+          candleSeriesRef.current = chartRef.current.addLineSeries({
+            color: COLORS.ema20, lineWidth: 2,
+            priceLineVisible: false, lastValueVisible: true,
+          })
+          break
+        case 'area':
+          candleSeriesRef.current = chartRef.current.addAreaSeries({
+            topColor:    'rgba(59,130,246,0.3)',
+            bottomColor: 'rgba(59,130,246,0.0)',
+            lineColor:   COLORS.ema20, lineWidth: 2,
+            priceLineVisible: false,
+          })
+          break
+        default: // candlestick
+          candleSeriesRef.current = chartRef.current.addCandlestickSeries({
+            upColor:         COLORS.bullish, downColor:       COLORS.bearish,
+            borderUpColor:   COLORS.bullish, borderDownColor: COLORS.bearish,
+            wickUpColor:     COLORS.bullish, wickDownColor:   COLORS.bearish,
+          })
+      }
+      prevChartTypeRef.current = chartType
+    }
+
+    // ── Datos según tipo de serie ─────────────────────────
     if (candleSeriesRef.current) {
-      candleSeriesRef.current.setData(candles)
+      if (chartType === 'line' || chartType === 'area') {
+        // Line/Area solo necesita time + value (= close)
+        candleSeriesRef.current.setData(candles.map(c => ({ time: c.time, value: c.close })))
+      } else {
+        candleSeriesRef.current.setData(candles)
+      }
     }
 
     // Inicializamos la leyenda OHLCV con la última vela
@@ -455,22 +626,30 @@ export default function ChartPanel() {
       volumeRef.current.applyOptions({ visible: showIndicators.volume !== false })
     }
 
-    // ── EMA 20 ──────────────────────────────────────────
+    // ── EMA 1 (azul, periodo configurable) ──────────────
+    const ema1p = indicatorPeriods?.ema1 ?? 20
     if (ema20Ref.current) {
-      const arr = calculateEMAArray(closes, 20)
+      const arr = calculateEMAArray(closes, ema1p)
       ema20Ref.current.setData(
-        arr.map((v, i) => ({ time: candles[i + 19]?.time, value: v })).filter(d => d.time)
+        arr.map((v, i) => ({ time: candles[i + ema1p - 1]?.time, value: v })).filter(d => d.time)
       )
-      ema20Ref.current.applyOptions({ visible: showIndicators.ema20 !== false })
+      ema20Ref.current.applyOptions({
+        visible: showIndicators.ema20 !== false,
+        title: `EMA${ema1p}`,
+      })
     }
 
-    // ── EMA 50 ──────────────────────────────────────────
+    // ── EMA 2 (naranja, periodo configurable) ────────────
+    const ema2p = indicatorPeriods?.ema2 ?? 50
     if (ema50Ref.current) {
-      const arr = calculateEMAArray(closes, 50)
+      const arr = calculateEMAArray(closes, ema2p)
       ema50Ref.current.setData(
-        arr.map((v, i) => ({ time: candles[i + 49]?.time, value: v })).filter(d => d.time)
+        arr.map((v, i) => ({ time: candles[i + ema2p - 1]?.time, value: v })).filter(d => d.time)
       )
-      ema50Ref.current.applyOptions({ visible: showIndicators.ema50 !== false })
+      ema50Ref.current.applyOptions({
+        visible: showIndicators.ema50 !== false,
+        title: `EMA${ema2p}`,
+      })
     }
 
     // ── Bollinger Bands ─────────────────────────────────
@@ -580,7 +759,7 @@ export default function ChartPanel() {
     if (rsiChartRef.current) rsiChartRef.current.timeScale().fitContent()
     if (macdChartRef.current) macdChartRef.current.timeScale().fitContent()
 
-  }, [activePair, activeTF, indicators, chartType, showIndicators])
+  }, [activePair, activeTF, indicators, chartType, showIndicators, indicatorPeriods])
 
   return (
     // ── Layout vertical: chart principal + RSI + MACD ────
@@ -595,12 +774,27 @@ export default function ChartPanel() {
 
         {/* ── Badges de overlays activos (top-right del chart) ─ */}
         <div className="absolute top-2 right-3 z-20 flex items-center gap-2 pointer-events-none">
-          {showIndicators.ema20   !== false && <OverlayBadge color={COLORS.ema20} label="EMA20" />}
-          {showIndicators.ema50   !== false && <OverlayBadge color={COLORS.ema50} label="EMA50" />}
-          {showIndicators.bb      !== false && <OverlayBadge color="rgba(148,163,184,0.7)" label="BB(20)" />}
-          {showIndicators.fibonacci !== false && <OverlayBadge color="rgba(59,130,246,0.8)" label="FIB" />}
-          {showIndicators.volume  !== false && <OverlayBadge color="#6B7280" label="VOL" />}
+          {showIndicators.ema20    !== false && <OverlayBadge color={COLORS.ema20}               label={`EMA${indicatorPeriods?.ema1??20}`} />}
+          {showIndicators.ema50    !== false && <OverlayBadge color={COLORS.ema50}               label={`EMA${indicatorPeriods?.ema2??50}`} />}
+          {showIndicators.bb       !== false && <OverlayBadge color="rgba(148,163,184,0.7)"     label={`BB(${indicatorPeriods?.bb??20})`} />}
+          {showIndicators.fibonacci !== false && <OverlayBadge color="rgba(59,130,246,0.8)"     label="FIB" />}
+          {showIndicators.volume   !== false && <OverlayBadge color="#6B7280"                   label="VOL" />}
         </div>
+
+        {/* ── Hint de herramienta de dibujo activa ──────── */}
+        {drawHint && (
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20
+                          bg-accent/90 text-white text-[11px] font-medium
+                          px-3 py-1 rounded-full shadow-lg pointer-events-none">
+            {drawHint}
+          </div>
+        )}
+
+        {/* ── Cursor especial cuando hay herramienta activa ─ */}
+        {drawingTool !== 'cursor' && drawingTool !== 'crosshair' && drawingTool !== 'trash' && (
+          <div className="absolute inset-0 z-[5]"
+               style={{ cursor: 'crosshair', pointerEvents: 'none' }} />
+        )}
 
         {/* Contenedor del chart de TradingView */}
         <div ref={containerRef} className="w-full h-full" />

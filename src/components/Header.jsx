@@ -144,11 +144,30 @@ function ChartTypeSelector({ chartType, onChange }) {
   )
 }
 
+// ── Input numérico compacto para periodos de indicadores ──────
+function PeriodInput({ label, value, min, max, onChange }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[10px]">
+      <span className="text-muted w-7">{label}</span>
+      <input
+        type="number"
+        min={min} max={max}
+        value={value}
+        onClick={e => e.stopPropagation()}
+        onChange={e => onChange(Math.max(min, Math.min(max, parseInt(e.target.value) || min)))}
+        className="w-14 bg-surface border border-border rounded px-1.5 py-0.5
+                   text-text-primary font-mono text-[10px] outline-none
+                   focus:border-accent transition-colors"
+      />
+    </div>
+  )
+}
+
 // ── Botón de indicadores con dropdown ────────────────────────
 function IndicatorsButton() {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
-  const { showIndicators, toggleIndicator } = useStore()
+  const { showIndicators, toggleIndicator, indicatorPeriods, setIndicatorPeriods } = useStore()
 
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
@@ -157,11 +176,11 @@ function IndicatorsButton() {
   }, [])
 
   const INDICATOR_LIST = [
-    { key: 'ema20',     label: 'EMA 20',             color: '#3B82F6' },
-    { key: 'ema50',     label: 'EMA 50',             color: '#F59E0B' },
-    { key: 'bb',        label: 'Bollinger Bands',    color: 'rgba(148,163,184,0.6)' },
-    { key: 'fibonacci', label: 'Fibonacci Levels',   color: 'rgba(59,130,246,0.8)' },
-    { key: 'volume',    label: 'Volumen',             color: '#6B7280' },
+    { key: 'ema20',     label: 'EMA Rápida',         color: '#3B82F6',              periodKey: 'ema1', min: 2,  max: 200 },
+    { key: 'ema50',     label: 'EMA Lenta',           color: '#F59E0B',              periodKey: 'ema2', min: 2,  max: 500 },
+    { key: 'bb',        label: 'Bollinger Bands',     color: 'rgba(148,163,184,0.6)', periodKey: 'bb',  min: 5,  max: 100 },
+    { key: 'fibonacci', label: 'Fibonacci Levels',    color: 'rgba(59,130,246,0.8)',  periodKey: null },
+    { key: 'volume',    label: 'Volumen',              color: '#6B7280',              periodKey: null },
   ]
 
   const activeCount = Object.values(showIndicators).filter(Boolean).length
@@ -184,35 +203,71 @@ function IndicatorsButton() {
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1 w-52 bg-[#131722] border border-border
+        <div className="absolute top-full left-0 mt-1 w-64 bg-[#131722] border border-border
                         rounded-md shadow-2xl z-[100] overflow-hidden">
+
+          {/* Título */}
           <div className="px-3 py-2 text-[10px] text-muted font-semibold uppercase tracking-widest
                           bg-surface border-b border-border">
-            Overlays del chart
+            Overlays del chart — Periodo configurable
           </div>
+
           {INDICATOR_LIST.map(ind => (
-            <button
-              key={ind.key}
-              onClick={() => toggleIndicator(ind.key)}
-              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-surface transition-colors"
-            >
-              {/* Checkbox visual */}
-              <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0
-                               transition-all ${showIndicators[ind.key]
-                                 ? 'bg-accent border-accent'
-                                 : 'border-border bg-transparent'}`}
+            <div key={ind.key}
+                 className="flex items-center gap-2 px-3 py-2 hover:bg-surface/60 transition-colors">
+
+              {/* Toggle (click en la fila entera excepto inputs) */}
+              <button
+                onClick={() => toggleIndicator(ind.key)}
+                className="flex items-center gap-2 flex-1 min-w-0"
               >
-                {showIndicators[ind.key] && (
-                  <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                    <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-                  </svg>
-                )}
-              </div>
-              {/* Pastilla de color */}
-              <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ background: ind.color }} />
-              <span className="text-[12px] text-text-primary">{ind.label}</span>
-            </button>
+                {/* Checkbox visual */}
+                <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0
+                                 transition-all ${showIndicators[ind.key]
+                                   ? 'bg-accent border-accent'
+                                   : 'border-border bg-transparent'}`}
+                >
+                  {showIndicators[ind.key] && (
+                    <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                      <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  )}
+                </div>
+                {/* Pastilla de color */}
+                <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: ind.color }} />
+                <span className={`text-[11px] truncate ${showIndicators[ind.key] ? 'text-text-primary' : 'text-muted'}`}>
+                  {ind.label}
+                  {ind.periodKey && (
+                    <span className="text-muted ml-1">
+                      ({indicatorPeriods?.[ind.periodKey] ?? '—'})
+                    </span>
+                  )}
+                </span>
+              </button>
+
+              {/* Input de periodo (solo si aplica) */}
+              {ind.periodKey && showIndicators[ind.key] && (
+                <PeriodInput
+                  label="P:"
+                  value={indicatorPeriods?.[ind.periodKey] ?? 20}
+                  min={ind.min}
+                  max={ind.max}
+                  onChange={v => setIndicatorPeriods({ [ind.periodKey]: v })}
+                />
+              )}
+            </div>
           ))}
+
+          {/* Separador + RSI periodo */}
+          <div className="border-t border-border/60 px-3 py-2 flex items-center justify-between">
+            <span className="text-[10px] text-muted">RSI Periodo</span>
+            <PeriodInput
+              label=""
+              value={indicatorPeriods?.rsi ?? 14}
+              min={2} max={50}
+              onChange={v => setIndicatorPeriods({ rsi: v })}
+            />
+          </div>
         </div>
       )}
     </div>

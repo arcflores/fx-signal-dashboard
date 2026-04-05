@@ -5,6 +5,22 @@
 // par activo, timeframe, velas, indicadores, veredicto Claude, historial.
 // ─────────────────────────────────────────────────────────────
 import { create } from 'zustand'
+import { generateHistoricalCandles, FOREX_PAIRS, TIMEFRAMES } from '../utils/mockForex'
+
+// ── Pre-seed SÍNCRONO de velas históricas ──────────────────
+// CRÍTICO: Generamos las velas ANTES de que React renderice cualquier componente.
+// Esto evita el problema de timing donde ChartPanel leía el store vacío:
+// - ChartPanel (hijo) ejecuta useEffect → lee store → necesita datos
+// - useForexMock (padre) ejecuta useEffect → siembra datos (demasiado tarde)
+// Al pre-seedear aquí, el store ya tiene 150 velas cuando ChartPanel monta.
+const TF_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '1h': 3600 }
+const initialCandleData = {}
+FOREX_PAIRS.forEach(pair => {
+  TIMEFRAMES.forEach(tf => {
+    const minutes = (TF_SECONDS[tf] || 300) / 60
+    initialCandleData[`${pair}_${tf}`] = generateHistoricalCandles(pair, 150, minutes)
+  })
+})
 
 const useStore = create((set, get) => ({
 
@@ -14,7 +30,8 @@ const useStore = create((set, get) => ({
 
   // ── Estado: Datos de velas por par+timeframe ──────────────
   // Estructura: { 'EUR/USD_5m': [{ time, open, high, low, close }] }
-  candleData: {},
+  // Pre-seeded con 150 velas históricas por par/TF (ver arriba)
+  candleData: initialCandleData,
 
   // ── Estado: Indicadores calculados del par/TF activo ──────
   indicators: {
@@ -51,6 +68,17 @@ const useStore = create((set, get) => ({
   // lo que es MUCHO más eficiente y fluido que redibujar todo el chart.
   // Estructura: { key: 'EUR/USD_5m', candle: { time, open, high, low, close } }
   lastTick: null,
+
+  // ── Estado: Tipo de chart activo ─────────────────────────
+  // Controla qué tipo de series usa el ChartPanel de TradingView
+  chartType: 'candlestick', // 'candlestick' | 'bar' | 'line' | 'area'
+
+  // ── Estado: Herramienta de dibujo activa ─────────────────
+  // La LeftToolbar escribe aquí; ChartPanel lo lee para el modo de dibujo
+  drawingTool: 'cursor', // 'cursor'|'trendline'|'hline'|'vline'|'fibonacci'|'rectangle'|'text'
+
+  // ── Estado: Visibilidad de indicadores overlay ────────────
+  showIndicators: { ema20: true, ema50: true, bb: true, fibonacci: true, volume: true },
 
   // ── Acciones ──────────────────────────────────────────────
 
@@ -108,6 +136,17 @@ const useStore = create((set, get) => ({
         },
       }
     }),
+
+  // Cambia el tipo de chart (candlestick, bar, line, area)
+  setChartType: (chartType) => set({ chartType }),
+
+  // Cambia la herramienta de dibujo activa
+  setDrawingTool: (drawingTool) => set({ drawingTool }),
+
+  // Activa/desactiva un indicador overlay
+  toggleIndicator: (key) => set(state => ({
+    showIndicators: { ...state.showIndicators, [key]: !state.showIndicators[key] }
+  })),
 
   // Establece el estado de análisis (mientras Claude procesa)
   setAnalyzing: (isAnalyzing) => set({ isAnalyzing }),

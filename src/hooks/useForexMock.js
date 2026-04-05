@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────
 import { useEffect, useRef } from 'react'
 import useStore from '../store/useStore'
-import { FOREX_PAIRS, PAIR_CONFIG, generateHistoricalCandles, TIMEFRAMES } from '../utils/mockForex'
+import { FOREX_PAIRS, PAIR_CONFIG } from '../utils/mockForex'
 
 // Duración de cada timeframe en segundos
 const TF_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '1h': 3600 }
@@ -41,24 +41,26 @@ function nextPrice(pair, current) {
 }
 
 export default function useForexMock() {
-  const { activePair, activeTF, setCandles, appendCandle, setCurrentPrice } = useStore()
+  const { activePair, activeTF, appendCandle, setCurrentPrice } = useStore()
   const tickRef = useRef(null)
 
-  // ── Carga inicial: 150 velas históricas para todos los pares/TF ──
+  // ── Inicialización de precios vivos desde el store pre-seeded ──
+  // El store ya tiene 150 velas históricas (pre-seeded en useStore.js).
+  // Aquí solo inicializamos el cache local 'livePrices' desde esas velas,
+  // para que el primer tick continúe exactamente desde el último close histórico.
   useEffect(() => {
     FOREX_PAIRS.forEach(pair => {
       const config = PAIR_CONFIG[pair]
-      TIMEFRAMES.forEach(tf => {
-        const minutes = (TF_SECONDS[tf] || 300) / 60
-        const candles = generateHistoricalCandles(pair, 150, minutes)
-        const key     = `${pair}_${tf}`
-        setCandles(key, candles)
-        // Inicializamos el precio vivo con la última vela histórica
-        if (candles.length > 0) livePrices[pair] = candles[candles.length - 1].close
-        else livePrices[pair] = config?.base ?? 1.0
-      })
+      // Para cada par, tomamos el último close de cualquier TF (todos parten del mismo precio)
+      const key5m  = `${pair}_5m`
+      const candles = useStore.getState().candleData[key5m]
+      if (candles && candles.length > 0) {
+        livePrices[pair] = candles[candles.length - 1].close
+      } else {
+        livePrices[pair] = config?.base ?? 1.0
+      }
     })
-  }, [setCandles])
+  }, []) // Solo una vez al montar — el store ya tiene los datos
 
   // ── Tick en tiempo real: solo para el par Forex activo ────────
   // Crypto usa Binance WebSocket (useBinanceWS.js)

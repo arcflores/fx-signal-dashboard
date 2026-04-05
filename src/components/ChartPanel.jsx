@@ -1,203 +1,278 @@
 // ─────────────────────────────────────────────────────────────
-// ChartPanel.jsx — Panel principal del gráfico de precios
-// Usa TradingView Lightweight Charts v4 para renderizar:
-//   - Gráfico de velas japonesas (candlestick)
-//   - Overlays: EMA20 (azul), EMA50 (naranja), Bollinger Bands
-//   - Líneas de Fibonacci
-//   - Sub-panel: RSI con zonas de sobrecompra/sobreventa
-//   - Sub-panel: MACD (histograma + líneas)
-// Todo se recalcula al cambiar el par o el timeframe.
+// ChartPanel.jsx — Panel principal del gráfico (estilo TradingView)
+//
+// Características:
+//   ✦ Velas japonesas con colores alcista/bajista
+//   ✦ Leyenda OHLCV en tiempo real (top-left del chart)
+//   ✦ EMA20 (azul) + EMA50 (naranja) sobre las velas
+//   ✦ Bollinger Bands (bandas dinámicas)
+//   ✦ Niveles de Fibonacci (coloreados)
+//   ✦ Volumen en histograma (semi-transparente)
+//   ✦ Sub-panel RSI(14) con zonas 70/30
+//   ✦ Sub-panel MACD(12,26,9) con histograma
+//   ✦ Soporte para chartType: candlestick | bar | line | area
+//   ✦ Crosshair sincronizado entre los 3 charts
+//   ✦ Responde al toggle de indicadores (showIndicators)
+//   ✦ ResizeObserver para layout responsive
+//
+// Optimización de rendimiento:
+//   - series.update() para ticks en tiempo real (500ms) — NO re-renderiza React
+//   - series.setData() solo al cambiar par / timeframe / indicadores
+//   - lastTick en Zustand como señal de tick → evita subscripción a candleData
 // ─────────────────────────────────────────────────────────────
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { createChart, ColorType, CrosshairMode, LineStyle } from 'lightweight-charts'
 import useStore from '../store/useStore'
 import { calculateEMAArray, calculateBollinger, calculateRSI, calculateMACD } from '../utils/indicators'
+import { PAIR_CONFIG } from '../utils/mockForex'
 
-// ── Configuración visual del chart ───────────────────────────
-// Paleta oscura que coincide con el tema general de la app.
-const CHART_THEME = {
-  layout: {
-    background:    { type: ColorType.Solid, color: '#0B0E11' },
-    textColor:     '#9B9EA3',
-    fontSize:      11,
-    fontFamily:    'Inter, sans-serif',
-  },
-  grid: {
-    vertLines:   { color: '#1A1D23', style: LineStyle.Dashed },
-    horzLines:   { color: '#1A1D23', style: LineStyle.Dashed },
-  },
-  crosshair: {
-    mode:   CrosshairMode.Normal,
-    vertLine: { color: '#3B82F6', labelBackgroundColor: '#3B82F6' },
-    horzLine: { color: '#3B82F6', labelBackgroundColor: '#3B82F6' },
-  },
-  rightPriceScale: {
-    borderColor:    '#1E2228',
-    textColor:      '#9B9EA3',
-    scaleMarginTop:    0.1,
-    scaleMarginBottom: 0.1,
-  },
-  timeScale: {
-    borderColor:       '#1E2228',
-    timeVisible:       true,
-    secondsVisible:    false,
-    tickMarkFormatter: (time) => {
-      // Formateamos la hora como HH:MM para timeframes cortos
-      const date = new Date(time * 1000)
-      return `${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`
-    },
-  },
+// ── Paleta de colores del tema ───────────────────────────────
+const COLORS = {
+  bg:         '#0B0E11',
+  surface:    '#131722',
+  border:     '#1E2732',
+  text:       '#9B9EA3',
+  grid:       '#1A1D23',
+  bullish:    '#26A69A',
+  bearish:    '#EF5350',
+  ema20:      '#3B82F6',
+  ema50:      '#F59E0B',
+  bbBand:     'rgba(148,163,184,0.35)',
+  bbMiddle:   'rgba(148,163,184,0.2)',
+  rsi:        '#A78BFA',
+  macdLine:   '#3B82F6',
+  macdSig:    '#F59E0B',
+  volUp:      'rgba(38,166,154,0.35)',
+  volDown:    'rgba(239,83,80,0.35)',
+  crosshair:  '#3B82F6',
 }
 
-// ── Hook para crear y destruir el chart ──────────────────────
-// Gestiona el ciclo de vida del chart de TradingView.
-// Retorna las referencias al chart y a los series.
-function useTVChart(containerRef, rsiRef, macdRef) {
-  const chartRef   = useRef(null) // Chart principal (candlestick)
-  const rsiChartRef  = useRef(null) // Chart sub-panel RSI
-  const macdChartRef = useRef(null) // Chart sub-panel MACD
+// ── Opciones base de chart ────────────────────────────────────
+const BASE_CHART_OPTIONS = {
+  layout: {
+    background: { type: ColorType.Solid, color: COLORS.bg },
+    textColor:  COLORS.text,
+    fontSize:   11,
+    fontFamily: 'Inter, -apple-system, sans-serif',
+  },
+  grid: {
+    vertLines: { color: COLORS.grid, style: LineStyle.Dashed },
+    horzLines: { color: COLORS.grid, style: LineStyle.Dashed },
+  },
+  crosshair: {
+    mode:     CrosshairMode.Normal,
+    vertLine: { color: COLORS.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: COLORS.crosshair },
+    horzLine: { color: COLORS.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: COLORS.crosshair },
+  },
+  rightPriceScale: {
+    borderColor:    COLORS.border,
+    textColor:      COLORS.text,
+    scaleMarginTop:    0.08,
+    scaleMarginBottom: 0.08,
+  },
+  timeScale: {
+    borderColor:       COLORS.border,
+    timeVisible:       true,
+    secondsVisible:    true,
+    tickMarkFormatter: (time) => {
+      const d = new Date(time * 1000)
+      return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`
+    },
+  },
+  handleScroll:  { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true },
+  handleScale:   { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+}
 
-  // Series del chart principal
-  const candleSeriesRef = useRef(null)
-  const ema20SeriesRef  = useRef(null)
-  const ema50SeriesRef  = useRef(null)
-  const bbUpperRef      = useRef(null)
-  const bbMiddleRef     = useRef(null)
-  const bbLowerRef      = useRef(null)
-  const fibLinesRef     = useRef([]) // Array de líneas de Fibonacci
+// ── Hook: crea los tres charts y sus series ──────────────────
+// Gestiona el ciclo de vida completo de los charts de TradingView.
+// Acepta refs para los 3 contenedores DOM y callbacks para actualizaciones.
+function useTVChart(containerRef, rsiRef, macdRef, onOHLCV) {
+  // ── Refs del chart principal ───────────────────────────
+  const chartRef         = useRef(null)
+  const candleSeriesRef  = useRef(null) // Serie activa (cambia con chartType)
+  const ema20Ref         = useRef(null)
+  const ema50Ref         = useRef(null)
+  const bbUpperRef       = useRef(null)
+  const bbMiddleRef      = useRef(null)
+  const bbLowerRef       = useRef(null)
+  const volumeRef        = useRef(null)
+  const fibLinesRef      = useRef([])
 
-  // Series del sub-panel RSI
-  const rsiSeriesRef    = useRef(null)
-  const rsiOBRef        = useRef(null) // Línea 70 (sobrecompra)
-  const rsiOSRef        = useRef(null) // Línea 30 (sobreventa)
+  // ── Refs del sub-panel RSI ─────────────────────────────
+  const rsiChartRef      = useRef(null)
+  const rsiSeriesRef     = useRef(null)
+  const rsiOBRef         = useRef(null)
+  const rsiOSRef         = useRef(null)
 
-  // Series del sub-panel MACD
-  const macdLineRef     = useRef(null)
-  const macdSignalRef   = useRef(null)
-  const macdHistRef     = useRef(null)
+  // ── Refs del sub-panel MACD ────────────────────────────
+  const macdChartRef     = useRef(null)
+  const macdLineRef      = useRef(null)
+  const macdSignalRef    = useRef(null)
+  const macdHistRef      = useRef(null)
+
+  // Callback para actualizar la leyenda OHLCV (pasado como prop)
+  const onOHLCVRef = useRef(onOHLCV)
+  useEffect(() => { onOHLCVRef.current = onOHLCV }, [onOHLCV])
 
   useEffect(() => {
     if (!containerRef.current || !rsiRef.current || !macdRef.current) return
 
-    // ── Crear chart principal ────────────────────────────
+    // ── Chart principal ────────────────────────────────
     const chart = createChart(containerRef.current, {
-      ...CHART_THEME,
+      ...BASE_CHART_OPTIONS,
       width:  containerRef.current.clientWidth,
       height: containerRef.current.clientHeight,
-      handleScroll:    { mouseWheel: true, pressedMouseMove: true },
-      handleScale:     { axisPressedMouseMove: true, mouseWheel: true },
     })
     chartRef.current = chart
 
-    // ── Serie de velas japonesas ─────────────────────────
+    // ── Serie de velas (candlestick por defecto) ───────
     const candleSeries = chart.addCandlestickSeries({
-      upColor:        '#26A69A', // Verde para velas alcistas
-      downColor:      '#EF5350', // Rojo para velas bajistas
-      borderUpColor:  '#26A69A',
-      borderDownColor:'#EF5350',
-      wickUpColor:    '#26A69A',
-      wickDownColor:  '#EF5350',
+      upColor:         COLORS.bullish,
+      downColor:       COLORS.bearish,
+      borderUpColor:   COLORS.bullish,
+      borderDownColor: COLORS.bearish,
+      wickUpColor:     COLORS.bullish,
+      wickDownColor:   COLORS.bearish,
     })
     candleSeriesRef.current = candleSeries
 
-    // ── Serie EMA 20 (azul — tendencia corta) ────────────
-    ema20SeriesRef.current = chart.addLineSeries({
-      color:      '#3B82F6',
-      lineWidth:  1,
-      title:      'EMA20',
+    // ── EMA 20 (azul) ─────────────────────────────────
+    ema20Ref.current = chart.addLineSeries({
+      color:            COLORS.ema20,
+      lineWidth:        1.5,
+      title:            'EMA20',
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     })
 
-    // ── Serie EMA 50 (naranja — tendencia media) ─────────
-    ema50SeriesRef.current = chart.addLineSeries({
-      color:      '#F59E0B',
-      lineWidth:  1,
-      title:      'EMA50',
+    // ── EMA 50 (naranja) ──────────────────────────────
+    ema50Ref.current = chart.addLineSeries({
+      color:            COLORS.ema50,
+      lineWidth:        1.5,
+      title:            'EMA50',
       priceLineVisible: false,
-      lastValueVisible: false,
+      lastValueVisible: true,
     })
 
-    // ── Bollinger Bands (líneas blancas translúcidas) ────
+    // ── Bollinger Bands ───────────────────────────────
     bbUpperRef.current = chart.addLineSeries({
-      color:      'rgba(148, 163, 184, 0.4)',
-      lineWidth:  1,
-      lineStyle:  LineStyle.Dashed,
+      color:            COLORS.bbBand,
+      lineWidth:        1,
+      lineStyle:        LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     })
     bbMiddleRef.current = chart.addLineSeries({
-      color:      'rgba(148, 163, 184, 0.25)',
-      lineWidth:  1,
-      lineStyle:  LineStyle.Dotted,
+      color:            COLORS.bbMiddle,
+      lineWidth:        1,
+      lineStyle:        LineStyle.Dotted,
       priceLineVisible: false,
       lastValueVisible: false,
     })
     bbLowerRef.current = chart.addLineSeries({
-      color:      'rgba(148, 163, 184, 0.4)',
-      lineWidth:  1,
-      lineStyle:  LineStyle.Dashed,
+      color:            COLORS.bbBand,
+      lineWidth:        1,
+      lineStyle:        LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     })
 
-    // ── Sub-panel RSI ─────────────────────────────────────
+    // ── Volumen (histograma en la parte inferior del chart) ─
+    volumeRef.current = chart.addHistogramSeries({
+      priceFormat:      { type: 'volume' },
+      priceScaleId:     'volume',   // escala separada para el volumen
+      priceLineVisible: false,
+      lastValueVisible: false,
+    })
+    // Configuramos la escala de volumen para que ocupe solo el 20% inferior
+    chart.priceScale('volume').applyOptions({
+      scaleMarginTop:    0.82,
+      scaleMarginBottom: 0,
+    })
+
+    // ── Leyenda OHLCV: suscripción al crosshair ────────
+    // Actualizamos el DOM directamente (sin setState) para no perder rendimiento
+    chart.subscribeCrosshairMove((param) => {
+      if (param.seriesData && param.seriesData.has(candleSeries)) {
+        const bar = param.seriesData.get(candleSeries)
+        if (bar) {
+          onOHLCVRef.current?.({
+            time:  param.time,
+            open:  bar.open,
+            high:  bar.high,
+            low:   bar.low,
+            close: bar.close,
+          })
+        }
+      } else if (!param.point) {
+        // Cursor fuera del chart → mostramos la última vela
+        onOHLCVRef.current?.(null)
+      }
+    })
+
+    // ── Sub-panel RSI ──────────────────────────────────
     const rsiChart = createChart(rsiRef.current, {
-      ...CHART_THEME,
+      ...BASE_CHART_OPTIONS,
       width:  rsiRef.current.clientWidth,
       height: rsiRef.current.clientHeight,
-      rightPriceScale: { ...CHART_THEME.rightPriceScale, scaleMarginTop: 0.2, scaleMarginBottom: 0.2 },
+      rightPriceScale: {
+        ...BASE_CHART_OPTIONS.rightPriceScale,
+        scaleMarginTop:    0.15,
+        scaleMarginBottom: 0.15,
+      },
     })
     rsiChartRef.current = rsiChart
 
     rsiSeriesRef.current = rsiChart.addLineSeries({
-      color:      '#A78BFA', // Violeta para RSI
-      lineWidth:  1.5,
+      color:            COLORS.rsi,
+      lineWidth:        1.5,
+      title:            'RSI',
       priceLineVisible: false,
       lastValueVisible: true,
-      title: 'RSI',
     })
-
-    // Línea horizontal en 70 (sobrecompra)
+    // Zona sobrecompra (70)
     rsiOBRef.current = rsiChart.addLineSeries({
-      color:     'rgba(239, 83, 80, 0.4)',
+      color:     'rgba(239,83,80,0.4)',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     })
-
-    // Línea horizontal en 30 (sobreventa)
+    // Zona sobreventa (30)
     rsiOSRef.current = rsiChart.addLineSeries({
-      color:     'rgba(38, 166, 154, 0.4)',
+      color:     'rgba(38,166,154,0.4)',
       lineWidth: 1,
       lineStyle: LineStyle.Dashed,
       priceLineVisible: false,
       lastValueVisible: false,
     })
 
-    // ── Sub-panel MACD ────────────────────────────────────
+    // ── Sub-panel MACD ────────────────────────────────
     const macdChart = createChart(macdRef.current, {
-      ...CHART_THEME,
+      ...BASE_CHART_OPTIONS,
       width:  macdRef.current.clientWidth,
       height: macdRef.current.clientHeight,
-      rightPriceScale: { ...CHART_THEME.rightPriceScale, scaleMarginTop: 0.3, scaleMarginBottom: 0.3 },
+      rightPriceScale: {
+        ...BASE_CHART_OPTIONS.rightPriceScale,
+        scaleMarginTop:    0.25,
+        scaleMarginBottom: 0.25,
+      },
     })
     macdChartRef.current = macdChart
 
     macdLineRef.current = macdChart.addLineSeries({
-      color:     '#3B82F6',
+      color:     COLORS.macdLine,
       lineWidth: 1.5,
+      title:     'MACD',
       priceLineVisible: false,
       lastValueVisible: true,
-      title: 'MACD',
     })
     macdSignalRef.current = macdChart.addLineSeries({
-      color:     '#F59E0B',
+      color:     COLORS.macdSig,
       lineWidth: 1.5,
+      title:     'Signal',
       priceLineVisible: false,
       lastValueVisible: true,
-      title: 'Signal',
     })
     macdHistRef.current = macdChart.addHistogramSeries({
       priceLineVisible: false,
@@ -205,297 +280,352 @@ function useTVChart(containerRef, rsiRef, macdRef) {
       title: 'Hist',
     })
 
-    // ── Sincronizar crosshair entre los tres charts ───────
-    // Cuando movemos el cursor en uno, se mueve en todos.
-    const syncCrosshair = (sourceChart, targetCharts) => {
-      sourceChart.subscribeCrosshairMove(param => {
-        if (!param.point) return
-        targetCharts.forEach(tc => {
-          if (tc) {
-            const logical = sourceChart.timeScale().coordinateToLogical(param.point.x)
-            if (logical !== null) {
-                const range = tc.timeScale().getVisibleLogicalRange()
-                const from  = (range && range.from != null) ? range.from : 0
-                tc.timeScale().scrollToPosition(logical - from, false)
-              }
-          }
-        })
-      })
-    }
-
-    // ── Sincronizar rango de tiempo entre charts ──────────
+    // ── Sincronizar TimeScale entre los 3 charts ───────
     chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
-      if (range && rsiChartRef.current) rsiChartRef.current.timeScale().setVisibleLogicalRange(range)
-      if (range && macdChartRef.current) macdChartRef.current.timeScale().setVisibleLogicalRange(range)
+      if (!range) return
+      if (rsiChartRef.current) rsiChartRef.current.timeScale().setVisibleLogicalRange(range)
+      if (macdChartRef.current) macdChartRef.current.timeScale().setVisibleLogicalRange(range)
     })
 
-    // ── ResizeObserver: redimiensona el chart con la ventana ─
-    const resizeObserver = new ResizeObserver(() => {
-      if (containerRef.current)
-        chart.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight })
-      if (rsiRef.current)
-        rsiChart.applyOptions({ width: rsiRef.current.clientWidth, height: rsiRef.current.clientHeight })
-      if (macdRef.current)
-        macdChart.applyOptions({ width: macdRef.current.clientWidth, height: macdRef.current.clientHeight })
+    // ── ResizeObserver responsive ──────────────────────
+    const ro = new ResizeObserver(() => {
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight })
+      if (rsiRef.current)       rsiChart.applyOptions({ width: rsiRef.current.clientWidth, height: rsiRef.current.clientHeight })
+      if (macdRef.current)      macdChart.applyOptions({ width: macdRef.current.clientWidth, height: macdRef.current.clientHeight })
     })
-    resizeObserver.observe(containerRef.current)
+    if (containerRef.current) ro.observe(containerRef.current)
+    if (rsiRef.current)        ro.observe(rsiRef.current)
+    if (macdRef.current)       ro.observe(macdRef.current)
 
-    // Cleanup: destruimos los charts al desmontar el componente
     return () => {
-      resizeObserver.disconnect()
+      ro.disconnect()
       chart.remove()
       rsiChart.remove()
       macdChart.remove()
     }
-  }, []) // Solo se ejecuta una vez al montar
+  }, []) // Solo al montar
 
   return {
     chartRef, candleSeriesRef,
-    ema20SeriesRef, ema50SeriesRef,
+    ema20Ref, ema50Ref,
     bbUpperRef, bbMiddleRef, bbLowerRef,
-    fibLinesRef, chartMainRef: chartRef,
+    volumeRef, fibLinesRef,
     rsiSeriesRef, rsiOBRef, rsiOSRef,
     macdLineRef, macdSignalRef, macdHistRef,
     rsiChartRef, macdChartRef,
   }
 }
 
+// ── Leyenda OHLCV (overlay top-left del chart) ───────────────
+// Muestra Open, High, Low, Close de la vela bajo el crosshair.
+// Se actualiza directamente via DOM (sin setState) para máximo rendimiento.
+function OHLCVLegend({ ohlcv, pair, tf }) {
+  const config   = PAIR_CONFIG[pair]
+  const decimals = config?.decimals ?? 5
+  if (!ohlcv) return null
+
+  const isUp     = ohlcv.close >= ohlcv.open
+  const pctChg   = ohlcv.open ? ((ohlcv.close - ohlcv.open) / ohlcv.open * 100) : 0
+
+  const fmt = (v) => v != null ? v.toFixed(decimals) : '—'
+
+  return (
+    <div className="absolute top-2 left-2 z-20 flex items-center gap-3 pointer-events-none
+                    bg-bg/80 backdrop-blur-sm px-2 py-1 rounded-md border border-border/50">
+      {/* Par y TF */}
+      <span className="text-[10px] font-bold text-muted">{pair} · {tf}</span>
+      {/* OHLC values */}
+      <span className="text-[10px] font-mono">
+        <span className="text-muted">O </span>
+        <span className="text-text-primary">{fmt(ohlcv.open)}</span>
+      </span>
+      <span className="text-[10px] font-mono">
+        <span className="text-muted">H </span>
+        <span className="text-call">{fmt(ohlcv.high)}</span>
+      </span>
+      <span className="text-[10px] font-mono">
+        <span className="text-muted">L </span>
+        <span className="text-put">{fmt(ohlcv.low)}</span>
+      </span>
+      <span className="text-[10px] font-mono">
+        <span className="text-muted">C </span>
+        <span className={isUp ? 'text-call' : 'text-put'}>{fmt(ohlcv.close)}</span>
+      </span>
+      {/* Cambio % */}
+      <span className={`text-[10px] font-bold ${isUp ? 'text-call' : 'text-put'}`}>
+        {isUp ? '+' : ''}{pctChg.toFixed(2)}%
+      </span>
+    </div>
+  )
+}
+
+// ── Badge de overlay activo ───────────────────────────────────
+function OverlayBadge({ color, label }) {
+  return (
+    <span className="text-[10px] font-bold" style={{ color }}>
+      {label}
+    </span>
+  )
+}
+
 // ── Componente principal ChartPanel ──────────────────────────
 export default function ChartPanel() {
   // Refs de los contenedores DOM de los tres charts
-  const containerRef = useRef(null) // Chart principal (velas)
-  const rsiRef       = useRef(null) // Sub-panel RSI
-  const macdRef      = useRef(null) // Sub-panel MACD
+  const containerRef = useRef(null)
+  const rsiRef       = useRef(null)
+  const macdRef      = useRef(null)
 
-  // Datos del store global
-  // lastTick es el tick individual más reciente — lo usamos para series.update() directo
-  // candleData NO se subscribe aquí para evitar re-renders en cada tick (500ms)
-  const { activePair, activeTF, indicators, lastTick } = useStore()
+  // ── Estado OHLCV para la leyenda ──────────────────────────
+  const [ohlcv, setOhlcv] = useState(null)
 
-  // Creamos los charts (hook)
+  // Callback memoizado para actualizar la leyenda OHLCV
+  const handleOHLCV = useCallback((bar) => setOhlcv(bar), [])
+
+  // ── Datos del store global ─────────────────────────────────
+  const {
+    activePair, activeTF, indicators,
+    lastTick, chartType, showIndicators,
+  } = useStore()
+
+  // ── Creamos los tres charts (hook) ─────────────────────────
   const {
     chartRef, candleSeriesRef,
-    ema20SeriesRef, ema50SeriesRef,
+    ema20Ref, ema50Ref,
     bbUpperRef, bbMiddleRef, bbLowerRef,
-    fibLinesRef, chartMainRef,
+    volumeRef, fibLinesRef,
     rsiSeriesRef, rsiOBRef, rsiOSRef,
     macdLineRef, macdSignalRef, macdHistRef,
     rsiChartRef, macdChartRef,
-  } = useTVChart(containerRef, rsiRef, macdRef)
+  } = useTVChart(containerRef, rsiRef, macdRef, handleOHLCV)
 
-  // ── TICK EN TIEMPO REAL: series.update() cada 500ms ──────
-  // Esta es la clave para animación fluida: NO redibujamos todo el chart,
-  // solo actualizamos la vela actual con series.update() — igual que un broker.
-  // Este efecto corre cada 500ms (cuando lastTick cambia).
+  // ── Efecto 1: TICK EN TIEMPO REAL (500ms) ─────────────────
+  // Solo actualiza la vela actual con series.update() → animación fluida
   useEffect(() => {
     if (!lastTick) return
     const activeKey = `${activePair}_${activeTF}`
     if (lastTick.key !== activeKey) return
     if (!candleSeriesRef.current) return
 
-    // series.update() actualiza SOLO la vela actual sin redibujar el chart completo
-    // Esto da la animación fluida de cuerpo/mecha que se ve en los brokers reales
+    // update() solo modifica la vela actual, no redibuja todo el chart
     candleSeriesRef.current.update(lastTick.candle)
+
+    // Actualiza la leyenda con el precio actual (sin esperar el crosshair)
+    setOhlcv(prev => prev ? { ...prev, close: lastTick.candle.close, high: Math.max(prev.high || 0, lastTick.candle.close), low: Math.min(prev.low || Infinity, lastTick.candle.close) } : lastTick.candle)
+
+    // Actualiza volumen si está visible
+    if (volumeRef.current && showIndicators.volume) {
+      const c = lastTick.candle
+      volumeRef.current.update({
+        time:  c.time,
+        value: c.volume ?? Math.round(100 + Math.random() * 500),
+        color: c.close >= c.open ? COLORS.volUp : COLORS.volDown,
+      })
+    }
   }, [lastTick, activePair, activeTF])
 
-  // ── CARGA INICIAL: setData() cuando cambia par o TF ──────
-  // Solo se ejecuta al cambiar de par/timeframe, NO en cada tick.
-  // Leemos las velas del store directamente (no del closure) para tener los datos más frescos.
+  // ── Efecto 2: CARGA INICIAL / CAMBIO PAR-TF ───────────────
+  // setData() completo: velas + todos los indicadores
+  // Se ejecuta al cambiar par, TF, indicadores o tipo de chart
   useEffect(() => {
     const key     = `${activePair}_${activeTF}`
-    // Leemos directo del store para evitar el closure stale (sin añadir candleData a deps)
     const candles = useStore.getState().candleData[key]
-    if (!candles || candles.length < 2) return
+    if (!candles || candles.length < 5) return
 
     const closes = candles.map(c => c.close)
-    const highs  = candles.map(c => c.high)
-    const lows   = candles.map(c => c.low)
+    const config  = PAIR_CONFIG[activePair]
 
-    // ── Velas principales (carga inicial completa) ─────
+    // ── Velas / Bars / Line / Area ──────────────────────
     if (candleSeriesRef.current) {
       candleSeriesRef.current.setData(candles)
     }
 
-    // ── EMA 20 y EMA 50 ───────────────────────────────
-    const ema20Arr = calculateEMAArray(closes, 20)
-    const ema50Arr = calculateEMAArray(closes, 50)
+    // Inicializamos la leyenda OHLCV con la última vela
+    const last = candles[candles.length - 1]
+    if (last) setOhlcv(last)
 
-    // Alineamos los arrays EMA con los timestamps de las velas
-    const ema20Data = ema20Arr.map((value, i) => ({
-      time:  candles[i + 20 - 1]?.time,
-      value,
-    })).filter(d => d.time)
-
-    const ema50Data = ema50Arr.map((value, i) => ({
-      time:  candles[i + 50 - 1]?.time,
-      value,
-    })).filter(d => d.time)
-
-    if (ema20SeriesRef.current) ema20SeriesRef.current.setData(ema20Data)
-    if (ema50SeriesRef.current) ema50SeriesRef.current.setData(ema50Data)
-
-    // ── Bollinger Bands ──────────────────────────────
-    // Calculamos BB rolling para cada vela (ventana deslizante de 20)
-    const bbUpperData  = []
-    const bbMiddleData = []
-    const bbLowerData  = []
-
-    for (let i = 19; i < closes.length; i++) {
-      const slice  = closes.slice(i - 19, i + 1)
-      const sma    = slice.reduce((a, b) => a + b, 0) / 20
-      const stdDev = Math.sqrt(slice.reduce((a, v) => a + Math.pow(v - sma, 2), 0) / 20)
-      const time   = candles[i].time
-
-      bbUpperData.push(  { time, value: parseFloat((sma + 2 * stdDev).toFixed(5)) })
-      bbMiddleData.push( { time, value: parseFloat(sma.toFixed(5)) })
-      bbLowerData.push(  { time, value: parseFloat((sma - 2 * stdDev).toFixed(5)) })
+    // ── Volumen ─────────────────────────────────────────
+    if (volumeRef.current) {
+      const volData = candles.map(c => ({
+        time:  c.time,
+        value: c.volume ?? Math.round(100 + Math.random() * 500),
+        color: c.close >= c.open ? COLORS.volUp : COLORS.volDown,
+      }))
+      volumeRef.current.setData(volData)
+      // Visibilidad según toggle de indicadores
+      volumeRef.current.applyOptions({ visible: showIndicators.volume !== false })
     }
 
-    if (bbUpperRef.current)  bbUpperRef.current.setData(bbUpperData)
-    if (bbMiddleRef.current) bbMiddleRef.current.setData(bbMiddleData)
-    if (bbLowerRef.current)  bbLowerRef.current.setData(bbLowerData)
+    // ── EMA 20 ──────────────────────────────────────────
+    if (ema20Ref.current) {
+      const arr = calculateEMAArray(closes, 20)
+      ema20Ref.current.setData(
+        arr.map((v, i) => ({ time: candles[i + 19]?.time, value: v })).filter(d => d.time)
+      )
+      ema20Ref.current.applyOptions({ visible: showIndicators.ema20 !== false })
+    }
 
-    // ── Fibonacci: dibujamos líneas de precio ────────
-    // Eliminamos las líneas previas de Fibonacci
+    // ── EMA 50 ──────────────────────────────────────────
+    if (ema50Ref.current) {
+      const arr = calculateEMAArray(closes, 50)
+      ema50Ref.current.setData(
+        arr.map((v, i) => ({ time: candles[i + 49]?.time, value: v })).filter(d => d.time)
+      )
+      ema50Ref.current.applyOptions({ visible: showIndicators.ema50 !== false })
+    }
+
+    // ── Bollinger Bands ─────────────────────────────────
+    if (bbUpperRef.current) {
+      const upper = [], middle = [], lower = []
+      for (let i = 19; i < closes.length; i++) {
+        const slice = closes.slice(i - 19, i + 1)
+        const sma   = slice.reduce((a, b) => a + b, 0) / 20
+        const std   = Math.sqrt(slice.reduce((a, v) => a + (v - sma) ** 2, 0) / 20)
+        const t     = candles[i].time
+        upper.push({ time: t, value: parseFloat((sma + 2 * std).toFixed(config?.decimals ?? 5)) })
+        middle.push({ time: t, value: parseFloat(sma.toFixed(config?.decimals ?? 5)) })
+        lower.push({ time: t, value: parseFloat((sma - 2 * std).toFixed(config?.decimals ?? 5)) })
+      }
+      bbUpperRef.current.setData(upper)
+      bbMiddleRef.current?.setData(middle)
+      bbLowerRef.current?.setData(lower)
+      const vis = showIndicators.bb !== false
+      bbUpperRef.current.applyOptions({ visible: vis })
+      bbMiddleRef.current?.applyOptions({ visible: vis })
+      bbLowerRef.current?.applyOptions({ visible: vis })
+    }
+
+    // ── Fibonacci ───────────────────────────────────────
+    // Limpiamos líneas anteriores
     if (chartRef.current && fibLinesRef.current.length > 0) {
-      fibLinesRef.current.forEach(series => {
-        try { chartRef.current.removeSeries(series) } catch {}
-      })
+      fibLinesRef.current.forEach(s => { try { chartRef.current.removeSeries(s) } catch {} })
       fibLinesRef.current = []
     }
 
-    // Colores para cada nivel de Fibonacci
-    const fibColors = {
-      '0.0%':   'rgba(156,163,175,0.3)',
-      '23.6%':  'rgba(251,191,36,0.5)',
-      '38.2%':  'rgba(249,115,22,0.5)',
-      '50.0%':  'rgba(148,163,184,0.5)',
-      '61.8%':  'rgba(59,130,246,0.7)', // OTE - más prominente
-      '78.6%':  'rgba(167,139,250,0.5)',
-      '100.0%': 'rgba(156,163,175,0.3)',
-    }
-
-    if (chartRef.current && indicators.fibonacci) {
+    if (chartRef.current && indicators.fibonacci && showIndicators.fibonacci !== false) {
+      const fibColors = {
+        '0.0%':   'rgba(156,163,175,0.25)',
+        '23.6%':  'rgba(251,191,36,0.5)',
+        '38.2%':  'rgba(249,115,22,0.5)',
+        '50.0%':  'rgba(148,163,184,0.45)',
+        '61.8%':  'rgba(59,130,246,0.75)',
+        '78.6%':  'rgba(167,139,250,0.5)',
+        '100.0%': 'rgba(156,163,175,0.25)',
+      }
       indicators.fibonacci.forEach(fib => {
-        const series = chartRef.current.addLineSeries({
-          color:     fibColors[fib.label] || 'rgba(255,255,255,0.2)',
-          lineWidth: fib.isOTE ? 2 : 1,
-          lineStyle: fib.isOTE ? LineStyle.Solid : LineStyle.Dashed,
+        const s = chartRef.current.addLineSeries({
+          color:            fibColors[fib.label] || 'rgba(255,255,255,0.2)',
+          lineWidth:        fib.isOTE ? 2 : 1,
+          lineStyle:        fib.isOTE ? LineStyle.Solid : LineStyle.Dashed,
           priceLineVisible: true,
           priceLineWidth:   fib.isOTE ? 2 : 1,
           priceLineColor:   fibColors[fib.label] || 'rgba(255,255,255,0.2)',
           lastValueVisible: true,
-          title: `Fib ${fib.label}`,
+          title:            `Fib ${fib.label}`,
         })
-        // Dibujamos una línea horizontal en el nivel de Fibonacci
-        const firstTime = candles[0].time
-        const lastTime  = candles[candles.length - 1].time
-        series.setData([
-          { time: firstTime, value: fib.level },
-          { time: lastTime,  value: fib.level },
+        s.setData([
+          { time: candles[0].time,               value: fib.level },
+          { time: candles[candles.length-1].time, value: fib.level },
         ])
-        fibLinesRef.current.push(series)
+        fibLinesRef.current.push(s)
       })
     }
 
-    // ── RSI: calculamos array histórico ──────────────
+    // ── RSI (14) ────────────────────────────────────────
     if (rsiSeriesRef.current) {
       const rsiData = []
-      // Calculamos RSI para cada punto desde la vela 14 en adelante
       for (let i = 14; i < closes.length; i++) {
-        const slice = closes.slice(0, i + 1)
-        const rsi   = calculateRSI(slice)
-        if (rsi !== null) {
-          rsiData.push({ time: candles[i].time, value: rsi })
-        }
+        const v = calculateRSI(closes.slice(0, i + 1))
+        if (v != null) rsiData.push({ time: candles[i].time, value: v })
       }
       rsiSeriesRef.current.setData(rsiData)
-
-      // Líneas de referencia en 70 y 30
-      const rsiTimes = [candles[0].time, candles[candles.length - 1].time]
-      if (rsiOBRef.current) rsiOBRef.current.setData(rsiTimes.map(t => ({ time: t, value: 70 })))
-      if (rsiOSRef.current) rsiOSRef.current.setData(rsiTimes.map(t => ({ time: t, value: 30 })))
+      // Líneas 70 y 30
+      const t0 = candles[0].time, tn = candles[candles.length-1].time
+      rsiOBRef.current?.setData([{ time: t0, value: 70 }, { time: tn, value: 70 }])
+      rsiOSRef.current?.setData([{ time: t0, value: 30 }, { time: tn, value: 30 }])
     }
 
-    // ── MACD: calculamos array histórico ─────────────
+    // ── MACD (12,26,9) ───────────────────────────────────
     if (macdLineRef.current) {
-      const macdLineData = []
-      const macdSigData  = []
-      const macdHistData = []
+      const lineData = [], sigData = [], histData = []
+      const k12 = 2 / 13, k26 = 2 / 27
 
-      // Calculamos MACD para cada punto desde la vela 35 en adelante
       for (let i = 35; i < closes.length; i++) {
         const slice = closes.slice(0, i + 1)
-
-        // Calculamos EMA 12 y 26 para este slice
-        const k12 = 2 / (12 + 1)
-        const k26 = 2 / (26 + 1)
-
-        let ema12 = slice.slice(0, 12).reduce((a, b) => a + b, 0) / 12
-        let ema26 = slice.slice(0, 26).reduce((a, b) => a + b, 0) / 26
-
+        let ema12 = slice.slice(0, 12).reduce((a,b) => a+b, 0) / 12
+        let ema26 = slice.slice(0, 26).reduce((a,b) => a+b, 0) / 26
         for (let j = 12; j < slice.length; j++) ema12 = slice[j] * k12 + ema12 * (1 - k12)
         for (let j = 26; j < slice.length; j++) ema26 = slice[j] * k26 + ema26 * (1 - k26)
 
-        const macdVal = parseFloat((ema12 - ema26).toFixed(5))
-        const time    = candles[i].time
+        const macdVal = parseFloat((ema12 - ema26).toFixed(config?.decimals ?? 5))
+        lineData.push({ time: candles[i].time, value: macdVal })
 
-        macdLineData.push({ time, value: macdVal })
-        // Señal simplificada: EMA9 del MACD (usamos valor anterior como aproximación)
-        if (macdLineData.length >= 9) {
-          const last9  = macdLineData.slice(-9).map(d => d.value)
-          const sigVal = last9.reduce((a, b) => a + b, 0) / 9
-          macdSigData.push({ time, value: parseFloat(sigVal.toFixed(5)) })
-          macdHistData.push({
-            time,
-            value: parseFloat((macdVal - sigVal).toFixed(5)),
-            color: macdVal > sigVal ? 'rgba(38,166,154,0.7)' : 'rgba(239,83,80,0.7)',
+        if (lineData.length >= 9) {
+          const sig = parseFloat((lineData.slice(-9).reduce((a,b) => a + b.value, 0) / 9).toFixed(config?.decimals ?? 5))
+          sigData.push({ time: candles[i].time, value: sig })
+          histData.push({
+            time:  candles[i].time,
+            value: parseFloat((macdVal - sig).toFixed(config?.decimals ?? 5)),
+            color: macdVal > sig ? 'rgba(38,166,154,0.75)' : 'rgba(239,83,80,0.75)',
           })
         }
       }
 
-      macdLineRef.current.setData(macdLineData)
-      if (macdSignalRef.current) macdSignalRef.current.setData(macdSigData)
-      if (macdHistRef.current)   macdHistRef.current.setData(macdHistData)
+      macdLineRef.current.setData(lineData)
+      macdSignalRef.current?.setData(sigData)
+      macdHistRef.current?.setData(histData)
     }
 
-    // Ajustamos vista al contenido en la carga inicial (no en cada tick)
+    // Ajustamos la vista al contenido en la carga inicial
     if (chartRef.current) chartRef.current.timeScale().fitContent()
     if (rsiChartRef.current) rsiChartRef.current.timeScale().fitContent()
     if (macdChartRef.current) macdChartRef.current.timeScale().fitContent()
 
-  // Solo re-ejecutamos al cambiar par/TF o indicadores (NO en cada tick)
-  // Los ticks se manejan arriba con series.update() vía lastTick
-  }, [activePair, activeTF, indicators])
+  }, [activePair, activeTF, indicators, chartType, showIndicators])
 
   return (
-    // ── Layout: 3 paneles verticales (velas + RSI + MACD) ──
-    <div className="flex flex-col flex-1 overflow-hidden min-h-0">
+    // ── Layout vertical: chart principal + RSI + MACD ────
+    <div className="flex flex-col flex-1 overflow-hidden min-h-0 bg-bg">
 
       {/* ── Gráfico principal de velas ───────────────────── */}
       <div className="relative" style={{ flex: '1 1 60%', minHeight: 0 }}>
-        {/* Etiquetas de overlays activos */}
-        <div className="absolute top-2 left-2 z-10 flex items-center gap-2 pointer-events-none">
-          <span className="text-[10px] font-bold" style={{ color: '#3B82F6' }}>EMA20</span>
-          <span className="text-[10px] font-bold" style={{ color: '#F59E0B' }}>EMA50</span>
-          <span className="text-[10px] font-bold text-muted">BB(20,2)</span>
-          <span className="text-[10px] font-bold" style={{ color: 'rgba(59,130,246,0.9)' }}>FIB</span>
+
+        {/* ── Leyenda OHLCV (actualizada en tiempo real) ─── */}
+        <OHLCVLegend ohlcv={ohlcv} pair={activePair} tf={activeTF} />
+
+        {/* ── Badges de overlays activos (top-right del chart) ─ */}
+        <div className="absolute top-2 right-3 z-20 flex items-center gap-2 pointer-events-none">
+          {showIndicators.ema20   !== false && <OverlayBadge color={COLORS.ema20} label="EMA20" />}
+          {showIndicators.ema50   !== false && <OverlayBadge color={COLORS.ema50} label="EMA50" />}
+          {showIndicators.bb      !== false && <OverlayBadge color="rgba(148,163,184,0.7)" label="BB(20)" />}
+          {showIndicators.fibonacci !== false && <OverlayBadge color="rgba(59,130,246,0.8)" label="FIB" />}
+          {showIndicators.volume  !== false && <OverlayBadge color="#6B7280" label="VOL" />}
         </div>
+
+        {/* Contenedor del chart de TradingView */}
         <div ref={containerRef} className="w-full h-full" />
       </div>
 
-      {/* ── Sub-panel RSI ────────────────────────────────── */}
-      <div className="relative border-t border-border" style={{ flex: '0 0 18%', minHeight: 0 }}>
-        <div className="absolute top-1 left-2 z-10 pointer-events-none">
-          <span className="text-[10px] font-bold text-muted">RSI(14)</span>
+      {/* ── Sub-panel RSI(14) ────────────────────────────── */}
+      <div
+        className="relative border-t border-border"
+        style={{ flex: '0 0 18%', minHeight: 0 }}
+      >
+        <div className="absolute top-1 left-2 z-10 pointer-events-none flex items-center gap-2">
+          <span className="text-[10px] font-bold" style={{ color: COLORS.rsi }}>RSI(14)</span>
+          <span className="text-[9px] text-muted">70 / 30</span>
         </div>
         <div ref={rsiRef} className="w-full h-full" />
       </div>
 
-      {/* ── Sub-panel MACD ───────────────────────────────── */}
-      <div className="relative border-t border-border" style={{ flex: '0 0 18%', minHeight: 0 }}>
-        <div className="absolute top-1 left-2 z-10 pointer-events-none">
-          <span className="text-[10px] font-bold text-muted">MACD(12,26,9)</span>
+      {/* ── Sub-panel MACD(12,26,9) ──────────────────────── */}
+      <div
+        className="relative border-t border-border"
+        style={{ flex: '0 0 18%', minHeight: 0 }}
+      >
+        <div className="absolute top-1 left-2 z-10 pointer-events-none flex items-center gap-2">
+          <span className="text-[10px] font-bold" style={{ color: COLORS.macdLine }}>MACD</span>
+          <span className="text-[9px] text-muted">(12,26,9)</span>
+          <span className="text-[9px]" style={{ color: COLORS.macdSig }}>Signal</span>
         </div>
         <div ref={macdRef} className="w-full h-full" />
       </div>

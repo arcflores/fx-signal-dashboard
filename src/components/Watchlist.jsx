@@ -6,7 +6,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import useStore from '../store/useStore'
-import { getInitialWatchlistData, PAIR_CONFIG, FOREX_PAIRS, CRYPTO_PAIRS } from '../utils/mockForex'
+import { getInitialWatchlistData, PAIR_CONFIG, FOREX_PAIRS, CRYPTO_PAIRS, BINANCE_SYMBOLS } from '../utils/mockForex'
 
 // ── Hook interno: simula actualizaciones de precio en tiempo real ──
 // Para los pares Forex (mock data) actualiza los precios cada ~2 segundos
@@ -15,7 +15,17 @@ function useWatchlistPrices() {
   const { activePair, candleData } = useStore()
 
   // Estado local: datos de cada par para la watchlist
-  const [watchData, setWatchData] = useState(() => getInitialWatchlistData())
+  // Incluye Forex (de getInitialWatchlistData) + Crypto con precios base
+  const [watchData, setWatchData] = useState(() => {
+    const forex  = getInitialWatchlistData()
+    const crypto = Object.keys(BINANCE_SYMBOLS).map(pair => ({
+      pair,
+      price:  pair.startsWith('BTC') ? '94500.00' : pair.startsWith('ETH') ? '3280.00' : '185.00',
+      change: '+0.00%',
+      up:     true,
+    }))
+    return [...forex, ...crypto]
+  })
 
   // Actualizamos Forex con pequeñas variaciones aleatorias (simula tick)
   useEffect(() => {
@@ -136,7 +146,7 @@ export default function Watchlist() {
   const getBias = (pair) => pair === activePair ? compositeBias : 'NEUTRAL'
 
   return (
-    <aside className="w-44 bg-bg border-r border-border flex flex-col flex-shrink-0 overflow-hidden">
+    <aside className="bg-bg border-r border-border flex flex-col flex-shrink-0 overflow-hidden" style={{ width: '130px' }}>
       {/* ── Cabecera del panel ───────────────────────────── */}
       <div className="px-3 py-2 border-b border-border flex-shrink-0">
         <span className="text-[10px] font-semibold text-muted uppercase tracking-widest">

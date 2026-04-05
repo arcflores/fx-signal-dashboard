@@ -1,0 +1,45 @@
+/* ─────────────────────────────────────────────────────────────
+   index.css — Estilos globales del terminal de trading
+   Se importa una vez en main.jsx y aplica a toda la app
+   ───────────────────────────────────────────────────────────── */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Reset base y tipografía global */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;             /* El scroll lo manejan los paneles internos */
+  background-color: #0B0E11;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  color: #E2E8F0;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar personalizada para el tema oscuro */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: #0B0E11; }
+::-webkit-scrollbar-thumb  { background: #1E2732; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #2D3F53; }
+
+/* Eliminamos el outline azul por defecto de los botones */
+button:focus { outline: none; }
+
+/* Clase utilitaria para el badge de señal */
+.signal-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+}

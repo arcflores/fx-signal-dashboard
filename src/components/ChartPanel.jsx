@@ -584,7 +584,8 @@ export default function ChartPanel() {
 
   return (
     // ── Layout vertical: chart principal + RSI + MACD ────
-    <div className="flex flex-col flex-1 overflow-hidden min-h-0 bg-bg">
+    // h-full + w-full para funcionar tanto en parent flex como block
+    <div className="flex flex-col overflow-hidden bg-bg" style={{ width: '100%', height: '100%' }}>
 
       {/* ── Gráfico principal de velas ───────────────────── */}
       <div className="relative" style={{ flex: '1 1 60%', minHeight: 0 }}>

@@ -14,6 +14,11 @@ export default {
         neutral:  '#64748B',   // Gris  → señal NEUTRAL
         accent:   '#3B82F6',   // Azul  → Claude AI
         warn:     '#F59E0B',   // Amarillo → advertencia / EMA
+        // Colores de texto (usados como text-text-primary / text-text-secondary)
+        text: {
+          primary:   '#D1D4DC',  // Texto principal — blanco suave
+          secondary: '#787B86',  // Texto secundario — gris medio
+        },
       },
     },
   },

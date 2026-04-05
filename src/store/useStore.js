@@ -46,6 +46,12 @@ const useStore = create((set, get) => ({
   // ── Estado: Precio actual del par activo ──────────────────
   currentPrice: null,
 
+  // ── Estado: Último tick individual para actualización en tiempo real ──
+  // El ChartPanel escucha este campo y usa series.update() directamente,
+  // lo que es MUCHO más eficiente y fluido que redibujar todo el chart.
+  // Estructura: { key: 'EUR/USD_5m', candle: { time, open, high, low, close } }
+  lastTick: null,
+
   // ── Acciones ──────────────────────────────────────────────
 
   // Cambia el par activo (ej. EUR/USD → GBP/USD)
@@ -78,6 +84,7 @@ const useStore = create((set, get) => ({
     })),
 
   // Agrega una nueva vela (tick update en tiempo real)
+  // También actualiza lastTick para que ChartPanel use series.update() directamente
   appendCandle: (key, candle) =>
     set(state => {
       const existing = state.candleData[key] || []
@@ -85,6 +92,7 @@ const useStore = create((set, get) => ({
       // Si el timestamp es el mismo, actualizamos la última vela (vela en formación)
       if (last && last.time === candle.time) {
         return {
+          lastTick: { key, candle },   // ← señal para series.update() en ChartPanel
           candleData: {
             ...state.candleData,
             [key]: [...existing.slice(0, -1), candle],
@@ -93,6 +101,7 @@ const useStore = create((set, get) => ({
       }
       // Si es una vela nueva, la agregamos (mantenemos máximo 200 velas)
       return {
+        lastTick: { key, candle },     // ← nueva vela también dispara update
         candleData: {
           ...state.candleData,
           [key]: [...existing.slice(-199), candle],

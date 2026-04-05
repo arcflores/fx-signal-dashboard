@@ -8,11 +8,12 @@
 
 // Precios base y configuración de cada par (valores reales de abril 2026)
 export const PAIR_CONFIG = {
-  'EUR/USD': { base: 1.0842, pip: 0.0001, decimals: 5, spread: 0.00012 },
-  'USD/JPY': { base: 151.34, pip: 0.01,   decimals: 3, spread: 0.015  },
-  'GBP/USD': { base: 1.2634, pip: 0.0001, decimals: 5, spread: 0.00015 },
-  'AUD/USD': { base: 0.6521, pip: 0.0001, decimals: 5, spread: 0.00013 },
-  'USD/CAD': { base: 1.3842, pip: 0.0001, decimals: 5, spread: 0.00014 },
+  // volatility = multiplicador de movimiento en pips por tick
+  'EUR/USD': { base: 1.0842, pip: 0.0001, decimals: 5, spread: 0.00012, volatility: 3 },
+  'USD/JPY': { base: 151.34, pip: 0.01,   decimals: 3, spread: 0.015,   volatility: 4 },
+  'GBP/USD': { base: 1.2634, pip: 0.0001, decimals: 5, spread: 0.00015, volatility: 5 },
+  'AUD/USD': { base: 0.6521, pip: 0.0001, decimals: 5, spread: 0.00013, volatility: 3 },
+  'USD/CAD': { base: 1.3842, pip: 0.0001, decimals: 5, spread: 0.00014, volatility: 3 },
 }
 
 // Mapeo de pares Forex a pares de Binance (para datos reales de crypto)

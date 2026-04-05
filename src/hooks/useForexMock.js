@@ -1,111 +1,113 @@
 // ─────────────────────────────────────────────────────────────
-// useForexMock.js — Hook que simula datos Forex en tiempo real
-// Mientras OANDA API no esté conectada, este hook:
-//   1. Carga velas históricas iniciales para cada par Forex
-//   2. Genera nuevas velas cada N segundos simulando el mercado
-//   3. Actualiza el precio actual del par activo en el store
-//
-// Para conectar OANDA real: reemplazar este hook por useOandaWS.js
+// useForexMock.js — Simulador de datos Forex en tiempo real
+// Tick cada 500ms para animación fluida (como broker real).
+// Usa random walk con reversión a la media para movimientos realistas.
 // ─────────────────────────────────────────────────────────────
 import { useEffect, useRef } from 'react'
 import useStore from '../store/useStore'
-import {
-  FOREX_PAIRS,
-  PAIR_CONFIG,
-  generateHistoricalCandles,
-  generateNewCandle,
-  TIMEFRAMES,
-} from '../utils/mockForex'
+import { FOREX_PAIRS, PAIR_CONFIG, generateHistoricalCandles, TIMEFRAMES } from '../utils/mockForex'
 
-// Mapeamos cada timeframe a su duración en minutos
-const TF_MINUTES = {
-  '1m':  1,
-  '3m':  3,
-  '5m':  5,
-  '15m': 15,
-  '1h':  60,
+// Duración de cada timeframe en segundos
+const TF_SECONDS = { '1m': 60, '3m': 180, '5m': 300, '15m': 900, '1h': 3600 }
+
+// Tick cada 500ms — animación fluida como un broker real
+const TICK_MS = 500
+
+// Precios vivos por par (cache local, más eficiente que leer el store en cada tick)
+const livePrices = {}
+
+// ── Genera un movimiento de precio realista ───────────────────
+// Random walk + reversión a la media + factor de sesión de trading
+function nextPrice(pair, current) {
+  const config = PAIR_CONFIG[pair]
+  if (!config) return current
+
+  const pip      = config.pip
+  const volPips  = pip * (config.volatility || 3)
+
+  // Sesión de trading activa = más volatilidad (Londres 08-17 UTC / NY 13-22 UTC)
+  const hour     = new Date().getUTCHours()
+  const active   = (hour >= 8 && hour <= 22)
+  const sessMult = active ? 1.5 : 0.5
+
+  // Reversión a la media: evita que el precio se aleje demasiado del base
+  const deviation    = current - config.base
+  const maxDev       = pip * 100
+  const meanRev      = (deviation / maxDev) * -0.2 * volPips
+
+  // Movimiento aleatorio + reversión
+  const move  = (Math.random() - 0.5) * 2 * volPips * sessMult + meanRev
+  return parseFloat((current + move).toFixed(config.decimals))
 }
-
-// Intervalo de tick (en ms) para simular el mercado
-// Usamos un intervalo rápido para demostración visual
-const TICK_INTERVAL_MS = 3000 // Actualiza cada 3 segundos
 
 export default function useForexMock() {
   const { activePair, activeTF, setCandles, appendCandle, setCurrentPrice } = useStore()
-  const tickRef = useRef(null) // Referencia al intervalo de tick
+  const tickRef = useRef(null)
 
-  // ── Paso 1: Carga inicial de velas históricas ─────────────
-  // Al montar, generamos datos históricos para todos los pares Forex
-  // y todos los timeframes. Esto rellena el chart desde el primer render.
+  // ── Carga inicial: 150 velas históricas para todos los pares/TF ──
   useEffect(() => {
     FOREX_PAIRS.forEach(pair => {
+      const config = PAIR_CONFIG[pair]
       TIMEFRAMES.forEach(tf => {
-        const minutes  = TF_MINUTES[tf] || 1
-        // Generamos 100 velas históricas para cada combinación par+TF
-        const candles  = generateHistoricalCandles(pair, 100, minutes)
-        const key      = `${pair}_${tf}`
+        const minutes = (TF_SECONDS[tf] || 300) / 60
+        const candles = generateHistoricalCandles(pair, 150, minutes)
+        const key     = `${pair}_${tf}`
         setCandles(key, candles)
+        // Inicializamos el precio vivo con la última vela histórica
+        if (candles.length > 0) livePrices[pair] = candles[candles.length - 1].close
+        else livePrices[pair] = config?.base ?? 1.0
       })
     })
-  }, [setCandles]) // Solo se ejecuta una vez al montar
+  }, [setCandles])
 
-  // ── Paso 2: Simulación de tick en tiempo real ─────────────
-  // Generamos nuevas velas periódicamente para el par/TF activo.
-  // Si el par no es Forex, detenemos el tick (lo maneja Binance WS).
+  // ── Tick en tiempo real: solo para el par Forex activo ────────
+  // Crypto usa Binance WebSocket (useBinanceWS.js)
   useEffect(() => {
-    // Limpiamos intervalo anterior si existe
     if (tickRef.current) clearInterval(tickRef.current)
-
-    // Solo simulamos si el par activo es Forex (no crypto)
     if (!FOREX_PAIRS.includes(activePair)) return
 
-    const minutes  = TF_MINUTES[activeTF] || 1
-    const key      = `${activePair}_${activeTF}`
+    const tfSec = TF_SECONDS[activeTF] || 300
+    const key   = `${activePair}_${activeTF}`
 
-    // Función de tick: genera una nueva vela basada en la última
     const tick = () => {
-      const state = useStore.getState()
-      const candles = state.candleData[key] || []
-      if (candles.length === 0) return
+      // Precio actual → nuevo precio con movimiento realista
+      const current  = livePrices[activePair] ?? PAIR_CONFIG[activePair]?.base ?? 1.0
+      const newPrice = nextPrice(activePair, current)
+      livePrices[activePair] = newPrice
 
-      const lastCandle  = candles[candles.length - 1]
+      // Timestamp de inicio de la vela actual (redondeado al TF)
       const now         = Math.floor(Date.now() / 1000)
-      const candleStart = Math.floor(now / (minutes * 60)) * (minutes * 60)
+      const candleStart = Math.floor(now / tfSec) * tfSec
 
-      // Si estamos dentro del mismo intervalo de vela: actualizamos la vela actual
-      if (candleStart === lastCandle.time) {
-        const config    = PAIR_CONFIG[activePair]
-        const variation = (Math.random() - 0.5) * config.pip * 4
-        const newClose  = parseFloat((lastCandle.close + variation).toFixed(config.decimals))
-        const updatedCandle = {
-          ...lastCandle,
-          close: newClose,
-          high:  Math.max(lastCandle.high, newClose),
-          low:   Math.min(lastCandle.low, newClose),
-        }
-        appendCandle(key, updatedCandle)
-        setCurrentPrice(newClose)
+      const candles    = useStore.getState().candleData[key] || []
+      const last       = candles[candles.length - 1]
+      if (!last) return
+
+      if (last.time === candleStart) {
+        // Misma vela: actualizamos close, high y low en tiempo real
+        appendCandle(key, {
+          time:  candleStart,
+          open:  last.open,
+          high:  Math.max(last.high, newPrice),
+          low:   Math.min(last.low,  newPrice),
+          close: newPrice,
+        })
       } else {
-        // Si es una nueva vela: la generamos a partir del precio anterior
-        const newCandle = generateNewCandle(activePair, lastCandle.close, candleStart, minutes)
-        if (newCandle) {
-          appendCandle(key, newCandle)
-          setCurrentPrice(newCandle.close)
-        }
+        // Nueva vela: open = close anterior (sin gaps)
+        appendCandle(key, {
+          time:  candleStart,
+          open:  last.close,
+          high:  Math.max(last.close, newPrice),
+          low:   Math.min(last.close, newPrice),
+          close: newPrice,
+        })
       }
+
+      setCurrentPrice(newPrice)
     }
 
-    // Ejecutamos el primer tick inmediatamente
-    tick()
-
-    // Luego ejecutamos cada TICK_INTERVAL_MS milisegundos
-    tickRef.current = setInterval(tick, TICK_INTERVAL_MS)
-
-    // Cleanup: limpiamos el intervalo al cambiar de par/TF
-    return () => {
-      if (tickRef.current) clearInterval(tickRef.current)
-    }
+    tick() // primer tick inmediato
+    tickRef.current = setInterval(tick, TICK_MS)
+    return () => clearInterval(tickRef.current)
   }, [activePair, activeTF, appendCandle, setCurrentPrice])
-
-  // Este hook no retorna nada; solo tiene efectos secundarios en el store
 }

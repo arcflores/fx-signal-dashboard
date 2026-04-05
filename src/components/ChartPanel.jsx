@@ -268,7 +268,9 @@ export default function ChartPanel() {
   const macdRef      = useRef(null) // Sub-panel MACD
 
   // Datos del store global
-  const { activePair, activeTF, candleData, indicators } = useStore()
+  // lastTick es el tick individual más reciente — lo usamos para series.update() directo
+  // candleData NO se subscribe aquí para evitar re-renders en cada tick (500ms)
+  const { activePair, activeTF, indicators, lastTick } = useStore()
 
   // Creamos los charts (hook)
   const {
@@ -281,17 +283,35 @@ export default function ChartPanel() {
     rsiChartRef, macdChartRef,
   } = useTVChart(containerRef, rsiRef, macdRef)
 
-  // ── Actualizar datos cuando llegan nuevas velas ──────────
+  // ── TICK EN TIEMPO REAL: series.update() cada 500ms ──────
+  // Esta es la clave para animación fluida: NO redibujamos todo el chart,
+  // solo actualizamos la vela actual con series.update() — igual que un broker.
+  // Este efecto corre cada 500ms (cuando lastTick cambia).
+  useEffect(() => {
+    if (!lastTick) return
+    const activeKey = `${activePair}_${activeTF}`
+    if (lastTick.key !== activeKey) return
+    if (!candleSeriesRef.current) return
+
+    // series.update() actualiza SOLO la vela actual sin redibujar el chart completo
+    // Esto da la animación fluida de cuerpo/mecha que se ve en los brokers reales
+    candleSeriesRef.current.update(lastTick.candle)
+  }, [lastTick, activePair, activeTF])
+
+  // ── CARGA INICIAL: setData() cuando cambia par o TF ──────
+  // Solo se ejecuta al cambiar de par/timeframe, NO en cada tick.
+  // Leemos las velas del store directamente (no del closure) para tener los datos más frescos.
   useEffect(() => {
     const key     = `${activePair}_${activeTF}`
-    const candles = candleData[key]
+    // Leemos directo del store para evitar el closure stale (sin añadir candleData a deps)
+    const candles = useStore.getState().candleData[key]
     if (!candles || candles.length < 2) return
 
     const closes = candles.map(c => c.close)
     const highs  = candles.map(c => c.high)
     const lows   = candles.map(c => c.low)
 
-    // ── Velas principales ──────────────────────────────
+    // ── Velas principales (carga inicial completa) ─────
     if (candleSeriesRef.current) {
       candleSeriesRef.current.setData(candles)
     }
@@ -439,12 +459,14 @@ export default function ChartPanel() {
       if (macdHistRef.current)   macdHistRef.current.setData(macdHistData)
     }
 
-    // Ajustamos el rango visible al contenido
+    // Ajustamos vista al contenido en la carga inicial (no en cada tick)
     if (chartRef.current) chartRef.current.timeScale().fitContent()
     if (rsiChartRef.current) rsiChartRef.current.timeScale().fitContent()
     if (macdChartRef.current) macdChartRef.current.timeScale().fitContent()
 
-  }, [candleData, activePair, activeTF, indicators])
+  // Solo re-ejecutamos al cambiar par/TF o indicadores (NO en cada tick)
+  // Los ticks se manejan arriba con series.update() vía lastTick
+  }, [activePair, activeTF, indicators])
 
   return (
     // ── Layout: 3 paneles verticales (velas + RSI + MACD) ──
